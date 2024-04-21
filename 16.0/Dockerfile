@@ -35,6 +35,7 @@ RUN apt-get update && \
         python3-watchdog \
         python3-xlrd \
         python3-xlwt \
+        python3-transliterate \
         xz-utils && \
     if [ -z "${TARGETARCH}" ]; then \
         TARGETARCH="$(dpkg --print-architecture)"; \
@@ -84,8 +85,10 @@ COPY ./odoo.conf /etc/odoo/
 # Set permissions and Mount /var/lib/odoo to allow restoring filestore and /mnt/extra-addons for users addons
 RUN chown odoo /etc/odoo/odoo.conf \
     && mkdir -p /mnt/extra-addons \
-    && chown -R odoo /mnt/extra-addons
-VOLUME ["/var/lib/odoo", "/mnt/extra-addons"]
+    && chown -R odoo /mnt/extra-addons \
+    && mkdir -p /opt/odoo \
+    && chown -R odoo /opt/odoo
+VOLUME ["/var/lib/odoo", "/mnt/extra-addons", "/opt/odoo"]
 
 # Expose Odoo services
 EXPOSE 8069 8071 8072
@@ -94,6 +97,7 @@ EXPOSE 8069 8071 8072
 ENV ODOO_RC /etc/odoo/odoo.conf
 
 COPY wait-for-psql.py /usr/local/bin/wait-for-psql.py
+COPY make_symb_links.py /usr/local/bin/make_symb_links.py
 
 # Set default user when running the container
 USER odoo
