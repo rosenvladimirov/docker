@@ -1,0 +1,74 @@
+version: '3.3'
+
+services:
+  odoo:
+    container_name: odoo-16
+    image: vladimirovrosen/odoo:16.0
+    hostname: odoo-16
+    volumes:
+      - odoo-data:/var/lib/odoo
+    networks:
+      - default
+    depends_on:
+      - db
+    expose:
+      - "8069"
+    # Overrides the default command so things don't shut down after the process ends.
+    command: sleep infinity
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=traefik_default
+
+      #----------------------------------------------- routers for: odoo --------------------------------------------------
+      # https
+      - traefik.http.routers.odoo-https.rule=Host(`${ODOO_HOSTNAME}`)
+      - traefik.http.routers.odoo-https.entrypoints=websecure
+      - traefik.http.routers.odoo-https.service=odoo
+      - traefik.http.routers.odoo-https.tls.certresolver=le
+      - traefik.http.routers.odoo-https.middlewares=gzip,sslheader,limit
+      #----------------------------- routes for: odoo/web/database || odoo/website/info  -----------------------------
+      # https
+      - traefik.http.routers.odoo-db-https.rule=Host(`${ODOO_HOSTNAME}`) && (PathPrefix(`/web/database`) || PathPrefix(`/website/info`))
+      - traefik.http.routers.odoo-db-https.entrypoints=websecure
+      - traefik.http.routers.odoo-db-https.service=odoo
+      - traefik.http.routers.odoo-db-https.tls.certresolver=le
+      - traefik.http.routers.odoo-db-https.middlewares=gzip,sslheader,limit
+      - traefik.http.services.odoo-db-https.loadbalancer.server.port=8069
+      #---------------------------------------- routes for: odoo/longpolling ------------------------------------------------
+      # https
+      - traefik.http.routers.odoo-im-https.rule=Host(`${ODOO_HOSTNAME}`) && (PathPrefix(`/longpolling`))
+      - traefik.http.routers.odoo-im-https.entrypoints=websecure
+      - traefik.http.routers.odoo-im-https.service=odoo-im
+      - traefik.http.routers.odoo-im-https.tls.certresolver=le
+      - traefik.http.routers.odoo-im-https.middlewares=gzip,sslheader,limit
+      #====================================================== services ===========================================================
+      - traefik.http.services.odoo.loadbalancer.server.port=8069
+      - traefik.http.services.odoo-im.loadbalancer.server.port=8072
+      #===================================================== middlewares =========================================================
+      - traefik.http.middlewares.gzip.compress=true
+      - traefik.http.middlewares.sslheader.headers.customrequestheaders.X-Forwarded-Proto=https
+      - traefik.http.middlewares.limit.buffering.memRequestBodyBytes=20971520
+      - traefik.http.middlewares.limit.buffering.maxRequestBodyBytes=20971520
+
+  db:
+    image: postgres:latest
+    hostname: db
+    restart: unless-stopped
+    container_name: db
+    networks:
+      - default
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+#    expose:
+#      - "5432"
+    environment:
+      - POSTGRES_DB=postgres
+      - POSTGRES_PASSWORD=odoo
+      - POSTGRES_USER=odoo
+volumes:
+  postgres-data:
+  odoo-data:
+
+networks:
+  traefik_default:
+    external: True

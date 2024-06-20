@@ -34,7 +34,7 @@ case "$1" in
         if [[ "$1" == "scaffold" ]] ; then
             exec odoo "$@"
         else
-            make_symb_links.py ${ODOO_RC}
+            make_symb_links.py ${$ODOO_RC}
             wait-for-psql.py ${DB_ARGS[@]} --timeout=30
             exec odoo "$@" "${DB_ARGS[@]}"
         fi

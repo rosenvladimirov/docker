@@ -1,5 +1,5 @@
 FROM debian:bullseye-slim
-MAINTAINER Odoo S.A. <info@odoo.com>
+MAINTAINER Rosen Vladimirov <vladimirov.rosen@gmail.com>
 
 SHELL ["/bin/bash", "-xo", "pipefail", "-c"]
 
@@ -55,8 +55,9 @@ RUN apt-get update && \
     && curl -o wkhtmltox.deb -sSL https://github.com/wkhtmltopdf/packaging/releases/download/${WKHTMLTOPDF_ARCH}.deb \
     && echo ${WKHTMLTOPDF_SHA} wkhtmltox.deb | sha1sum -c - \
     && apt-get install -y --no-install-recommends ./wkhtmltox.deb \
-    && rm -rf /var/lib/apt/lists/* wkhtmltox.deb && \
-    pipx ensurepath --global
+    && rm -rf /var/lib/apt/lists/* wkhtmltox.deb  \
+    && pip3 install pipx \
+    && pipx ensurepath
 
 # install latest postgresql-client
 RUN echo 'deb http://apt.postgresql.org/pub/repos/apt/ bullseye-pgdg main' > /etc/apt/sources.list.d/pgdg.list \
@@ -93,8 +94,14 @@ COPY ./odoo.conf /etc/odoo/
 RUN chown odoo /etc/odoo/odoo.conf \
     && mkdir -p /mnt/extra-addons \
     && chown -R odoo /mnt/extra-addons \
-    && mkdir -p /opt/odoo/odoo-16.0 \
+    && mkdir -p /opt/odoo/odoo-16.0/oca \
     && chown -R odoo /opt/odoo
+
+#RUN case ${TARGETARCH} in \
+#    "amd64") pipx install oca-maintainers-tools@git+https://github.com/OCA/maintainer-tools.git && oca-clone-everything --target-branch 16.0 /opt/odoo/odoo-16.0/oca ;; \
+#    "arm64") pipx install oca-maintainers-tools@git+https://github.com/OCA/maintainer-tools.git && oca-clone-everything --target-branch 16.0 /opt/odoo/odoo-16.0/oca ;; \
+#    esac
+
 VOLUME ["/var/lib/odoo", "/mnt/extra-addons", "/opt/odoo"]
 COPY wait-for-psql.py /usr/local/bin/wait-for-psql.py
 COPY make_symb_links.py /usr/local/bin/make_symb_links.py

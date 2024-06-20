@@ -1,5 +1,5 @@
-FROM debian:bullseye-slim
-MAINTAINER Odoo S.A. <info@odoo.com>
+FROM debian:bookworm-slim
+MAINTAINER Rosen Vladimirov <vladimirov.rosen@gmail.com>
 
 SHELL ["/bin/bash", "-xo", "pipefail", "-c"]
 
@@ -47,19 +47,18 @@ RUN apt-get update && \
     fi; \
     WKHTMLTOPDF_ARCH=${TARGETARCH} && \
     case ${TARGETARCH} in \
-    "amd64") WKHTMLTOPDF_ARCH=amd64 && WKHTMLTOPDF_SHA=cecbf5a6abbd68d324a7cd6c51ec843d71e98951 && WKHTMLTOPDF_ARCH=0.12.6.1-2/wkhtmltox_0.12.6.1-2.bullseye_${TARGETARCH}  ;; \
-    "arm64")  WKHTMLTOPDF_SHA=abf9e031dd561b46e82744b72588d9c5d4c303ca && WKHTMLTOPDF_ARCH=0.12.6.1-2/wkhtmltox_0.12.6.1-2.bullseye_${TARGETARCH}  ;; \
-    "arm")  WKHTMLTOPDF_SHA=538b88cdfb5ea5e99a175ab6aeaacb92b3c722f7 && WKHTMLTOPDF_ARCH=0.12.6.1-2/wkhtmltox_0.12.6.1-2.raspberrypi.bullseye_armhf  ;; \
-    "ppc64le" | "ppc64el") WKHTMLTOPDF_SHA=47fd255b8a729fbc4cb4705bad7c11e315c30e0c && WKHTMLTOPDF_ARCH=0.12.6.1-2/wkhtmltox_0.12.6.1-2.bullseye_ppc64el  ;; \
+    "amd64") WKHTMLTOPDF_ARCH=amd64 && WKHTMLTOPDF_SHA=e9f95436298c77cc9406bd4bbd242f4771d0a4b2 && WKHTMLTOPDF_ARCH=0.12.6.1-3/wkhtmltox_0.12.6.1-3.bookworm_${TARGETARCH}  ;; \
+    "arm64")  WKHTMLTOPDF_SHA=77bc06be5e543510140e6728e11b7c22504080d4 && WKHTMLTOPDF_ARCH=0.12.6.1-3/wkhtmltox_0.12.6.1-3.bookworm_${TARGETARCH}  ;; \
     esac \
     && curl -o wkhtmltox.deb -sSL https://github.com/wkhtmltopdf/packaging/releases/download/${WKHTMLTOPDF_ARCH}.deb \
     && echo ${WKHTMLTOPDF_SHA} wkhtmltox.deb | sha1sum -c - \
     && apt-get install -y --no-install-recommends ./wkhtmltox.deb \
-    && rm -rf /var/lib/apt/lists/* wkhtmltox.deb && \
-    pipx ensurepath --global
+    && rm -rf /var/lib/apt/lists/* wkhtmltox.deb  \
+    && pip3 install --break-system-packages pipx \
+    && pipx ensurepath
 
 # install latest postgresql-client
-RUN echo 'deb http://apt.postgresql.org/pub/repos/apt/ bullseye-pgdg main' > /etc/apt/sources.list.d/pgdg.list \
+RUN echo 'deb http://apt.postgresql.org/pub/repos/apt/ bookworm-pgdg main' > /etc/apt/sources.list.d/pgdg.list \
     && GNUPGHOME="$(mktemp -d)" \
     && export GNUPGHOME \
     && repokey='B97B0AFCAA1A47F044F244A07FCC7D46ACCC4CF8' \
@@ -88,18 +87,24 @@ RUN curl -o odoo.deb -sSL http://nightly.odoo.com/${ODOO_VERSION}/nightly/deb/od
 # Copy entrypoint script and Odoo configuration file
 COPY ./entrypoint.sh /
 COPY ./odoo.conf /etc/odoo/
+COPY ./addons.conf /etc/odoo/
 
 # Set permissions and Mount /var/lib/odoo to allow restoring filestore and /mnt/extra-addons for users addons
-RUN chown odoo /etc/odoo/odoo.conf \
-    && mkdir -p /mnt/extra-addons \
+RUN chown odoo /etc/odoo/odoo.conf  \
+    && chown odoo /etc/odoo/addons.conf \
+    && mkdir -p /mnt/extra-addons/odoo/addons \
     && chown -R odoo /mnt/extra-addons \
-    && mkdir -p /opt/odoo/odoo-16.0 \
+    && mkdir -p /opt/odoo/odoo-16.0/oca \
+    && mkdir -p /opt/odoo/odoo-16.0/ee \
+    && mkdir -p /opt/odoo/odoo-16.0/rv \
     && chown -R odoo /opt/odoo
 VOLUME ["/var/lib/odoo", "/mnt/extra-addons", "/opt/odoo"]
 COPY wait-for-psql.py /usr/local/bin/wait-for-psql.py
 COPY make_symb_links.py /usr/local/bin/make_symb_links.py
+COPY healthy_check.sh /usr/local/bin/healthy_check.sh
 RUN chmod +x /usr/local/bin/make_symb_links.py && \
-    chmod +x /usr/local/bin/wait-for-psql.py
+    chmod +x /usr/local/bin/wait-for-psql.py  && \
+    chmod +x /usr/local/bin/healthy_check.sh
 
 # Expose Odoo services
 EXPOSE 8069 8071 8072
@@ -113,6 +118,9 @@ RUN chmod +x /usr/local/bin/make_symb_links.py
 
 # Set default user when running the container
 USER odoo
+#HEALTHCHECK CMD curl --fail -b /tmp/cookies --cookie-jar /tmp/cookies -s -H "Content-Type: application/json" -X POST -d '{"jsonrpc":"2.0","method":"call","params":{"method":"list","service":"db","args":{}}}' 0.0.0.0:8069/jsonrpc || exit 1
+
+HEALTHCHECK CMD /usr/local/bin/healt_check.py
 
 ENTRYPOINT ["/entrypoint.sh"]
 CMD ["odoo"]
