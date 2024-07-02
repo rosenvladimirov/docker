@@ -5,8 +5,8 @@ services:
     container_name: odoo-supervisor-17
     image: vladimirovrosen/odoo:supervisor-17.0
     hostname: odoo-supervisor-17
-    environment:
-      - ODOO_BRANCH="17.0"
+#    environment:
+#      - ODOO_BRANCH="17.0"
     networks:
       - default
     volumes:

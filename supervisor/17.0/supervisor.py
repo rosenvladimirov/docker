@@ -89,19 +89,20 @@ def check_dir(dir_addons, links_seek=None, depends=None, main=None):
 def install_oca_addons(oca_folder):
     os.chdir(oca_folder)
     print(f"Installing OCA addons... on {oca_folder}")
-    subprocess.call(['oca-clone-everything', '--target-branch', BRANCH])
+    subprocess.call(['oca-clone-everything', '--target-branch', f"{BRANCH}"])
 
 
 def install_ee_addons(ee_folder):
     os.chdir(ee_folder)
     print(f"Install ee modules... on {ee_folder}")
-    subprocess.call(['git', 'clone', '--branch', BRANCH, 'git@github.com:odoo/enterprise.git'])
+    subprocess.call(['git', 'clone', '--branch', f"{BRANCH}", 'git@github.com:odoo/enterprise.git'])
 
 
 def github_credentials(user, password, email):
     if user and password and email:
         if os.path.isfile('/usr/local/bin/github_credentials.sh'):
             print(f"Create credentials for {user}")
+            # subprocess.call(['github_credentials.sh', '-u', user, '-e', email])
             subprocess.call(['github_credentials.sh', '-u', user, '-p', password, '-t', password, '-e', email])
 
 
