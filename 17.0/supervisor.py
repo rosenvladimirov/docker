@@ -40,11 +40,13 @@ def install_packages(requirement_list):
             if should_install_requirement(requirement)
         ]
         if len(requirements) > 0:
-            subprocess.call([sys.executable, '-m', 'pip', 'install', '--upgrade', '--target', '/mnt/extra-addons', *requirements])
+            subprocess.call(
+                [sys.executable, '-m', 'pip', 'install', '--upgrade', '--target', '/mnt/extra-addons', *requirements])
         else:
             print("Requirements already satisfied.")
     except Exception as e:
         print(e)
+
 
 PRIORITY = []
 IGNORE = ['.git', 'setup', '.gitignore', '.idea']
@@ -62,7 +64,8 @@ def check_dir(dir_addons, links_seek=None, depends=None, main=None):
     dir_list.sort(key=lambda t: t in set(PRIORITY), reverse=True)
     for file_seek in dir_list:
         if os.path.isfile(os.path.join(file_seek, "requirements.txt")):
-            subprocess.call([sys.executable, '-m', 'pip', 'install', '--ignore-installed', '-r', os.path.join(file_seek, "requirements.txt")])
+            subprocess.call([sys.executable, '-m', 'pip', 'install', '--ignore-installed', '-r',
+                             os.path.join(file_seek, "requirements.txt")])
         check_file_directory = os.path.join(dir_addons, file_seek)
         if os.path.isdir(check_file_directory) and not (file_seek in set(IGNORE)) and not os.path.islink(
                 check_file_directory):
@@ -85,12 +88,12 @@ def check_dir(dir_addons, links_seek=None, depends=None, main=None):
 def install_oca_addons():
     subprocess.call([sys.executable, '-m', 'pipx', 'install',
                      'oca-maintainers-tools@git+https://github.com/OCA/maintainer-tools.git'])
-    os.chdir("/opt/odoo/odoo-16.0/oca")
+    os.chdir("/opt/odoo/odoo-17.0/oca")
     subprocess.call([sys.executable, '/usr/local/bin/oca-clone-everything --target-branch', '16.0'])
 
 
-def install_ее_addons():
-    os.chdir("/opt/odoo/odoo-16.0/ee")
+def install_ee_addons():
+    os.chdir("/opt/odoo/odoo-17.0/ee")
     subprocess.call(['git', 'clone', '--branch', '16.0', 'git@github.com:odoo/enterprise.git'])
 
 
@@ -123,16 +126,26 @@ if __name__ == '__main__':
                             dest='use_ее',
                             help='install all odoo enterprise addons',
                             default=False)
+    arg_parser.add_argument('-u', '--uid',
+                            dest='odoo_uid',
+                            help='Odoo owner UID',)
+    arg_parser.add_argument('-g', '--gid',
+                            dest='odoo_gid',
+                            help='Odoo owner GID', )
 
     args = arg_parser.parse_args()
 
     config = False
     addons = []
-    source_dir = '/opt/odoo/odoo-16.0'
-    target_dir = '/var/lib/odoo/.local/share/Odoo/addons'
+    source_dir = '/opt/odoo/odoo-17.0'
+    odoo_dir = '/var/lib/odoo/'
+    target_dir = f'{odoo_dir}.local/share/Odoo/addons'
+    supervisor = '/opt/odoo/odoo-17.0/supervisor.txt'
+    odoo_uid = args.odoo_uid or 100
+    odoo_gid = args.odoo_gid or 100
     user_name = user_email = token = False
 
-    if args.conf:
+    if args.conf and os.path.isfile(args.conf):
         config = configparser.ConfigParser()
         config.read(args.conf, "utf-8")
 
@@ -150,7 +163,9 @@ if __name__ == '__main__':
                 target_dir = value
             if key == 'priority':
                 PRIORITY += value.split(',')
+
     if config and 'github' in config.sections():
+        for key, value in config['symlinks'].items():
             if key == 'username':
                 user_name = value
             if key == 'email':
@@ -158,12 +173,30 @@ if __name__ == '__main__':
             if key == 'password':
                 token = value
 
+    if config and 'owner' in config.sections():
+        for key, value in config['owner'].items():
+            if key == 'uid':
+                user_uid = value
+            if key == 'gid':
+                user_gid = value
+
+    if not os.path.isdir(source_dir):
+        get_module_logger(__name__).info(f'Create source folder: {source_dir}')
+        os.makedirs(source_dir)
+
+    if not os.path.exists(supervisor):
+        os.chown(odoo_dir, uid=odoo_uid, gid=odoo_gid)
+        get_module_logger(__name__).info(f'Change owner: {odoo_dir} to {odoo_uid}:{odoo_gid}')
+        with open(supervisor, "w") as file:
+            file.write(f"chown {odoo_uid}:{odoo_gid} {odoo_dir}")
+
     if user_name and token and user_email:
         subprocess.call(['git', 'config', '--global', f'user.name "{user_name}"'])
         subprocess.call(['git', 'config', '--global', f'user.password "{token}"'])
         subprocess.call(['git', 'config', '--global', f'user.email "{user_email}"'])
         subprocess.call(['git', 'config', '--global', 'credential.helper "cache --timeout=3600"'])
-        subprocess.call(['git', 'config', '--global',  f'url."https://git:{token}@github.com/".insteadOf "git@github.com:"'])
+        subprocess.call(
+            ['git', 'config', '--global', f'url."https://git:{token}@github.com/".insteadOf "git@github.com:"'])
 
     if args.use_oca:
         install_oca_addons()

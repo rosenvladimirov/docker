@@ -1,5 +1,5 @@
-FROM ubuntu:jammy
-MAINTAINER Odoo S.A. <info@odoo.com>
+FROM debian:bookworm
+MAINTAINER Rosen Vladimirov <vladimirv.rosen@gmail.com>
 
 SHELL ["/bin/bash", "-xo", "pipefail", "-c"]
 
@@ -8,12 +8,17 @@ ENV LANG en_US.UTF-8
 
 # Retrieve the target architecture to install the correct wkhtmltopdf package
 ARG TARGETARCH
+ARG DISTRO
+ARG ODOO_SHA
+ARG WKHTMLTOPDF_URL
+ARG WKHTMLTOPDF_VERSION
 
 # Install some deps, lessc and less-plugin-clean-css, and wkhtmltopdf
 
 RUN apt-get update && \
     DEBIAN_FRONTEND=noninteractive \
     apt-get install -y --no-install-recommends \
+        lsb-release \
         ca-certificates \
         curl \
         dirmngr \
@@ -37,30 +42,30 @@ RUN apt-get update && \
         python3-watchdog \
         python3-xlrd \
         python3-xlwt \
+        python3-transliterate \
         xz-utils && \
     if [ -z "${TARGETARCH}" ]; then \
         TARGETARCH="$(dpkg --print-architecture)"; \
     fi; \
     WKHTMLTOPDF_ARCH=${TARGETARCH} && \
+    WKHTMLTOPDF_URL=https://github.com/wkhtmltopdf/packaging/releases/download && \
+    WKHTMLTOPDF_VERSION=0.12.6.1-3 && \
+    DISTRO=$(lsb_release -cs) && \
     case ${TARGETARCH} in \
-    "amd64") WKHTMLTOPDF_ARCH=amd64 && WKHTMLTOPDF_SHA=967390a759707337b46d1c02452e2bb6b2dc6d59  ;; \
-    "arm64")  WKHTMLTOPDF_SHA=90f6e69896d51ef77339d3f3a20f8582bdf496cc  ;; \
-    "ppc64le" | "ppc64el") WKHTMLTOPDF_ARCH=ppc64el && WKHTMLTOPDF_SHA=5312d7d34a25b321282929df82e3574319aed25c  ;; \
+    "amd64") WKHTMLTOPDF_SHA=e9f95436298c77cc9406bd4bbd242f4771d0a4b2  ;; \
+    "arm64") WKHTMLTOPDF_SHA=77bc06be5e543510140e6728e11b7c22504080d4  ;; \
+    "armhf") DISTRO=raspberrypi.${DISTRO} && WKHTMLTOPDF_SHA=538b88cdfb5ea5e99a175ab6aeaacb92b3c722f7 ;; \
+    "ppc64le" | "ppc64el") WKHTMLTOPDF_ARCH=ppc64el && WKHTMLTOPDF_SHA=47fd255b8a729fbc4cb4705bad7c11e315c30e0c  ;; \
     esac \
-    && curl -o wkhtmltox.deb -sSL https://github.com/wkhtmltopdf/packaging/releases/download/0.12.6.1-3/wkhtmltox_0.12.6.1-3.jammy_${WKHTMLTOPDF_ARCH}.deb \
+    && curl -o wkhtmltox.deb -sSL ${WKHTMLTOPDF_URL}/${WKHTMLTOPDF_VERSION}/wkhtmltox_${WKHTMLTOPDF_VERSION}.${DISTRO}_${WKHTMLTOPDF_ARCH}.deb \
     && echo ${WKHTMLTOPDF_SHA} wkhtmltox.deb | sha1sum -c - \
     && apt-get install -y --no-install-recommends ./wkhtmltox.deb \
     && rm -rf /var/lib/apt/lists/* wkhtmltox.deb
 
 # install latest postgresql-client
-RUN echo 'deb http://apt.postgresql.org/pub/repos/apt/ jammy-pgdg main' > /etc/apt/sources.list.d/pgdg.list \
-    && GNUPGHOME="$(mktemp -d)" \
-    && export GNUPGHOME \
-    && repokey='B97B0AFCAA1A47F044F244A07FCC7D46ACCC4CF8' \
-    && gpg --batch --keyserver keyserver.ubuntu.com --recv-keys "${repokey}" \
-    && gpg --batch --armor --export "${repokey}" > /etc/apt/trusted.gpg.d/pgdg.gpg.asc \
-    && gpgconf --kill all \
-    && rm -rf "$GNUPGHOME" \
+RUN install -d /usr/share/postgresql-common/pgdg \
+    && curl -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc --fail https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+    && sh -c 'echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list' \
     && apt-get update  \
     && apt-get install --no-install-recommends -y postgresql-client \
     && rm -f /etc/apt/sources.list.d/pgdg.list \
@@ -71,17 +76,18 @@ RUN npm install -g rtlcss
 
 # Install Odoo
 ENV ODOO_VERSION 17.0
-ARG ODOO_RELEASE=20240416
-ARG ODOO_SHA=994057dc6db742f62b0666b8edf5cd1623df78d0
-RUN curl -o odoo.deb -sSL http://nightly.odoo.com/${ODOO_VERSION}/nightly/deb/odoo_${ODOO_VERSION}.${ODOO_RELEASE}_all.deb \
+ARG ODOO_RELEASE=latest
+RUN ODOO_SHA=$(curl -sSL https://nightly.odoo.com/17.0/nightly/deb/Packages | grep -F SHA1 | cut -d ' ' -f2) \
+    && curl -o odoo.deb -sSL http://nightly.odoo.com/${ODOO_VERSION}/nightly/deb/odoo_${ODOO_VERSION}.${ODOO_RELEASE}_all.deb \
     && echo "${ODOO_SHA} odoo.deb" | sha1sum -c - \
     && apt-get update \
     && apt-get -y install --no-install-recommends ./odoo.deb \
     && rm -rf /var/lib/apt/lists/* odoo.deb
 
 # Copy entrypoint script and Odoo configuration file
-COPY ./entrypoint.sh /
+COPY --chown=root:root ./entrypoint.sh /
 COPY ./odoo.conf /etc/odoo/
+COPY ../supervisor/17.0/addons.conf /etc/odoo/
 
 # Set permissions and Mount /var/lib/odoo to allow restoring filestore and /mnt/extra-addons for users addons
 RUN chown odoo /etc/odoo/odoo.conf \
@@ -97,8 +103,8 @@ EXPOSE 8069 8071 8072
 # Set the default config file
 ENV ODOO_RC /etc/odoo/odoo.conf
 
-COPY wait-for-psql.py /usr/local/bin/wait-for-psql.py
-COPY make_symb_links.py /usr/local/bin/make_symb_links.py
+COPY --chown=root:root wait-for-psql.py /usr/local/bin/
+COPY --chown=root:root ../supervisor/17.0/supervisor.py /usr/local/bin/
 
 # Set default user when running the container
 USER odoo
