@@ -27,9 +27,13 @@ RUN mkdir -p /etc/odoo && \
     mkdir -p /mnt/extra-addons && \
     mkdir -p $PYTHONPATH  && \
     mkdir /var/lib/odoo
+
 COPY --chown=root:root ./addons.conf /etc/odoo/
+COPY --chown=root:root ./requirements.txt /app/
 COPY --chown=root:root ./supervisor.py /app/
 COPY --chown=root:root ./github_credentials.sh /usr/local/bin/
+COPY --chown=root:root ./init.sh /app/
+RUN chmod +x /app/init.sh
 
 ENTRYPOINT ["python3"]
 CMD ["/app/supervisor.py", "/etc/odoo/addons.conf"]

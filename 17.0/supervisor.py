@@ -9,6 +9,7 @@ import logging
 from importlib.metadata import distribution
 
 BRANCH = os.environ.get('ODOO_BRANCH', '17.0')
+UNINSTALL = []
 
 def get_module_logger(mod_name):
     """
@@ -24,8 +25,10 @@ def get_module_logger(mod_name):
     return logger
 
 
-def should_install_requirement(requirement):
+def should_install_requirement(requirement, skip_test=False):
     should_install = False
+    if not skip_test and requirement in UNINSTALL:
+        return should_install
     try:
         distribution(requirement)
     except ImportError:
@@ -33,12 +36,22 @@ def should_install_requirement(requirement):
     return should_install
 
 
-def install_packages(requirement_list, target_destinations, requirements=False):
+def should_uninstall_requirement(requirement):
+    should_install = True
+    try:
+        distribution(requirement)
+    except ImportError:
+        should_install = False
+    return should_install
+
+
+def install_packages(requirement_list, target_destinations, requirements=False, force_reinstall=False):
     try:
         if requirements:
+            print(f"Install python requirements {requirements}...")
             subprocess.call(
-                [sys.executable, '-m', 'pip', 'install', '--upgrade', '--target', target_destinations,
-                 '-r', requirements])
+                [sys.executable, '-m', 'pip', 'install', '--upgrade',
+                 '--target', target_destinations, '-r', requirements])
         else:
             requirements = [
                 requirement
@@ -46,13 +59,30 @@ def install_packages(requirement_list, target_destinations, requirements=False):
                 if should_install_requirement(requirement)
             ]
             if len(requirements) > 0:
+                print(f"Install python package {requirements}...")
                 subprocess.call(
-                    [sys.executable, '-m', 'pip', 'install', '--upgrade', '--target', target_destinations,
-                     *requirements])
+                    [sys.executable, '-m', 'pip', 'install', '--upgrade',
+                     '--target', target_destinations, *requirements])
             else:
                 print("Requirements already satisfied.")
     except Exception as e:
         print(e)
+
+
+def uninstall_packages(requirement_list):
+    requirements = [
+        requirement
+        for requirement in requirement_list
+        if should_uninstall_requirement(requirement)
+    ]
+    if len(requirements) > 0:
+        for requirement in requirements:
+            print(f"Uninstall python package {requirement}...")
+            subprocess.call(
+                [sys.executable, '-m', 'pip', 'uninstall', '--yes', f'{requirement}'])
+    else:
+        print("Requirements already satisfied.")
+
 
 
 PRIORITY = []
@@ -154,7 +184,8 @@ def get_config_print(config_file):
 
 if __name__ == '__main__':
     config = force_update = False
-    user_name = user_email = odoo_user_name = odoo_user_password = app_user_name = app_user_password = token = use_oca = use_ee = False
+    user_name = user_email = odoo_user_name = odoo_user_password = \
+        app_user_name = app_user_password = token = use_oca = use_ee = python_package = False
     addons = []
 
     arg_parser = argparse.ArgumentParser(description='Installing odoo modules.')
@@ -273,6 +304,10 @@ if __name__ == '__main__':
                     if key == 'use_ee':
                         use_ee = value
 
+                if section == 'uninstall':
+                    if key == 'python_package':
+                        python_package = value
+
     for folder in folders:
         if not os.path.isdir(folder):
             os.makedirs(folder)
@@ -291,6 +326,11 @@ if __name__ == '__main__':
                 f"Configurations: {args.conf}\n",
                 config and "\n".join(get_config_print(config))
             ])
+
+    if python_package:
+        UNINSTALL = python_package.replace(" ", "").split(',')
+        if UNINSTALL:
+            uninstall_packages(UNINSTALL)
 
     if args.use_oca or use_oca:
         install_oca_addons(oca_dir)
@@ -316,3 +356,6 @@ if __name__ == '__main__':
         except FileExistsError:
             print(f'Duplicate: {source} to {target}')
             # get_module_logger(__name__).info('Duplicate: %s', source)
+
+    if os.path.isfile(os.path.join('/app/', "requirements.txt")):
+        install_packages([], '/opt/python3', os.path.join('/app/', "requirements.txt"))
