@@ -5,8 +5,8 @@ import os, sys
 import ast
 import subprocess
 import argparse
-import pkg_resources
 import logging
+from importlib.metadata import distribution
 
 BRANCH = os.environ.get('ODOO_BRANCH', '17.0')
 
@@ -27,24 +27,30 @@ def get_module_logger(mod_name):
 def should_install_requirement(requirement):
     should_install = False
     try:
-        pkg_resources.require(requirement)
-    except (pkg_resources.DistributionNotFound, pkg_resources.VersionConflict):
+        distribution(requirement)
+    except ImportError:
         should_install = True
     return should_install
 
 
-def install_packages(requirement_list):
+def install_packages(requirement_list, target_destinations, requirements=False):
     try:
-        requirements = [
-            requirement
-            for requirement in requirement_list
-            if should_install_requirement(requirement)
-        ]
-        if len(requirements) > 0:
+        if requirements:
             subprocess.call(
-                [sys.executable, '-m', 'pip', 'install', '--upgrade', '--target', '/mnt/extra-addons', *requirements])
+                [sys.executable, '-m', 'pip', 'install', '--upgrade', '--target', target_destinations,
+                 '-r', requirements])
         else:
-            print("Requirements already satisfied.")
+            requirements = [
+                requirement
+                for requirement in requirement_list
+                if should_install_requirement(requirement)
+            ]
+            if len(requirements) > 0:
+                subprocess.call(
+                    [sys.executable, '-m', 'pip', 'install', '--upgrade', '--target', target_destinations,
+                     *requirements])
+            else:
+                print("Requirements already satisfied.")
     except Exception as e:
         print(e)
 
@@ -65,8 +71,9 @@ def check_dir(dir_addons, links_seek=None, depends=None, main=None):
     dir_list.sort(key=lambda t: t in set(PRIORITY), reverse=True)
     for file_seek in dir_list:
         if os.path.isfile(os.path.join(file_seek, "requirements.txt")):
-            subprocess.call([sys.executable, '-m', 'pip', 'install', '--ignore-installed', '-r',
-                             os.path.join(file_seek, "requirements.txt")])
+            install_packages([], '/opt/python3', os.path.join(file_seek, "requirements.txt"))
+            # subprocess.call([sys.executable, '-m', 'pip', 'install', '--target', '/opt/python3', '--ignore-installed',
+            #                  '-r', os.path.join(file_seek, "requirements.txt")])
         check_file_directory = os.path.join(dir_addons, file_seek)
         if os.path.isdir(check_file_directory) and not (file_seek in set(IGNORE)) and not os.path.islink(
                 check_file_directory):
@@ -80,7 +87,7 @@ def check_dir(dir_addons, links_seek=None, depends=None, main=None):
                         if line not in main:
                             depends.update([line])
                 if data.get('external_dependencies') and data['external_dependencies'].get('python'):
-                    install_packages(data['external_dependencies']['python'])
+                    install_packages(data['external_dependencies']['python'], '/opt/python3')
             else:
                 links_seek, depends = check_dir(check_file_directory, links_seek, depends, main)
     return links_seek, depends
@@ -195,7 +202,7 @@ if __name__ == '__main__':
     opt_dir = '/opt/odoo'
     source_dir = f'{opt_dir}/odoo-{BRANCH}'
     odoo_dir = '/var/lib/odoo'
-    target_dir = f'{odoo_dir}/.local/share/Odoo/addons'
+    target_dir = f'{odoo_dir}/.local/share/Odoo/addons/{BRANCH}'
     oca_dir = f'{opt_dir}/odoo-{BRANCH}/oca'
     rv_dir = f'{opt_dir}/odoo-{BRANCH}/rv'
     ee_dir = f'{opt_dir}/odoo-{BRANCH}/ee'
@@ -289,7 +296,7 @@ if __name__ == '__main__':
         install_oca_addons(oca_dir)
 
     if args.odoo_addons_oca:
-        install_packages(args.odoo_addons_oca.split(','))
+        install_packages(args.odoo_addons_oca.split(','), '/mnt/extra-addons')
 
     if args.use_ee or use_ee:
         install_ee_addons(ee_dir)
@@ -307,5 +314,5 @@ if __name__ == '__main__':
             print(f'Symbolic link: {source} -> {target}')
             # get_module_logger(__name__).info('Source %s to %s', source, target)
         except FileExistsError:
-            print(f'Duplicate: {source}')
+            print(f'Duplicate: {source} to {target}')
             # get_module_logger(__name__).info('Duplicate: %s', source)

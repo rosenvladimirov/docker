@@ -10,7 +10,7 @@ do
         *) echo "Use -u username -p password -t token -e email";;
     esac
 done
-git config --global credential.helper "cache --timeout=3600"
+git config --global credential.helper "cache --timeout=86400"
 git config --global user.name "$username"
 git config --global user.password "$password"
 git config --global user.email "$email"

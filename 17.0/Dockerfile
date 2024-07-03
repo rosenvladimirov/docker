@@ -5,6 +5,7 @@ SHELL ["/bin/bash", "-xo", "pipefail", "-c"]
 
 # Generate locale C.UTF-8 for postgres and general locale data
 ENV LANG en_US.UTF-8
+ENV PYTHONPATH=/opt/python3
 
 # Retrieve the target architecture to install the correct wkhtmltopdf package
 ARG TARGETARCH
@@ -87,13 +88,14 @@ RUN ODOO_SHA=$(curl -sSL https://nightly.odoo.com/17.0/nightly/deb/Packages | gr
 # Copy entrypoint script and Odoo configuration file
 COPY --chown=root:root ./entrypoint.sh /
 COPY ./odoo.conf /etc/odoo/
-COPY ../supervisor/17.0/addons.conf /etc/odoo/
+COPY ./addons.conf /etc/odoo/
 
 # Set permissions and Mount /var/lib/odoo to allow restoring filestore and /mnt/extra-addons for users addons
 RUN chown odoo /etc/odoo/odoo.conf \
     && mkdir -p /mnt/extra-addons \
     && chown -R odoo /mnt/extra-addons \
     && mkdir -p /opt/odoo \
+    && mkdir -p $PYTHONPATH \
     && chown -R odoo /opt/odoo
 VOLUME ["/var/lib/odoo", "/mnt/extra-addons", "/opt/odoo"]
 
@@ -104,7 +106,7 @@ EXPOSE 8069 8071 8072
 ENV ODOO_RC /etc/odoo/odoo.conf
 
 COPY --chown=root:root wait-for-psql.py /usr/local/bin/
-COPY --chown=root:root ../supervisor/17.0/supervisor.py /usr/local/bin/
+COPY --chown=root:root ./supervisor.py /usr/local/bin/
 
 # Set default user when running the container
 USER odoo

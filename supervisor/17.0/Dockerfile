@@ -5,6 +5,7 @@ ENV PIPX_BIN_DIR=/usr/local/bin
 ENV PIPX_DEFAULT_PYTHON=python3
 ENV PIPX_GLOBAL_MAN_DIR=/usr/local/share/man
 ENV PIPX_GLOBAL_HOME=/opt/odoo/pipx
+ENV PYTHONPATH=/opt/python3
 
 SHELL ["/bin/bash", "-xo", "pipefail", "-c"]
 RUN apt-get update && \
@@ -23,6 +24,8 @@ RUN pip3 install --upgrade pip && \
 
 RUN mkdir -p /etc/odoo && \
     mkdir -p /opt/odoo && \
+    mkdir -p /mnt/extra-addons && \
+    mkdir -p $PYTHONPATH  && \
     mkdir /var/lib/odoo
 COPY --chown=root:root ./addons.conf /etc/odoo/
 COPY --chown=root:root ./supervisor.py /app/
