@@ -2,3 +2,4 @@ lxml
 lxml[html_clean]
 pyOpenSSL
 cryptography
+openpyxl
