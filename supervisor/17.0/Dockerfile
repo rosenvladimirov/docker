@@ -1,5 +1,5 @@
 FROM python:3.11-bookworm
-MAINTAINER Rosen Vladimirov <vladimirv.rosen@gmail.com>
+LABEL maintainer="Rosen Vladimirov <vladimirv.rosen@gmail.com>"
 
 ENV PIPX_BIN_DIR=/usr/local/bin
 ENV PIPX_DEFAULT_PYTHON=python3
@@ -14,19 +14,19 @@ RUN apt-get update && \
         python3-pip \
         libcups2-dev
 
-RUN mkdir -p /root/.ssh && \
-    ssh-keyscan github.com >> /root/.ssh/known_hosts
+RUN mkdir -p /etc/odoo && \
+    mkdir -p /opt/odoo && \
+    mkdir -p /mnt/extra-addons && \
+    mkdir -p $PYTHONPATH  && \
+    mkdir /var/lib/odoo && \
+    mkdir -p /root/.ssh
+
+RUN ssh-keyscan github.com >> /root/.ssh/known_hosts
 
 RUN pip3 install --upgrade pip && \
     pip3 install pipx && \
     pipx ensurepath --force && \
     pipx install oca-maintainers-tools@git+https://github.com/OCA/maintainer-tools.git
-
-RUN mkdir -p /etc/odoo && \
-    mkdir -p /opt/odoo && \
-    mkdir -p /mnt/extra-addons && \
-    mkdir -p $PYTHONPATH  && \
-    mkdir /var/lib/odoo
 
 COPY --chown=root:root ./addons.conf /etc/odoo/
 COPY --chown=root:root ./requirements.txt /app/
