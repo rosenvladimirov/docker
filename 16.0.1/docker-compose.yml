@@ -7,6 +7,8 @@ services:
     hostname: odoo-16
     volumes:
       - odoo-data:/var/lib/odoo
+      - opt-data:/opt/odoo
+      - odoo-logs:/var/log/odoo
     networks:
       - default
     depends_on:
@@ -68,9 +70,36 @@ services:
       - POSTGRES_DB=postgres
       - POSTGRES_PASSWORD=odoo
       - POSTGRES_USER=odoo
+
+  pgadmin:
+    container_name: pgadmin_container
+    image: dpage/pgadmin4
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_DEFAULT_EMAIL:-vladimirov.rosen@gmail.com}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_DEFAULT_PASSWORD:-admin}
+      PGADMIN_CONFIG_SERVER_MODE: 'False'
+    volumes:
+       - pgadmin:/var/lib/pgadmin
+    ports:
+      - "${PGADMIN_PORT:-5050}:80"
+    networks:
+      - default
+    restart: unless-stopped
+
+  logs:
+    image: mthenw/frontail
+    ports:
+      - "9001:9001"
+    command: /var/log/odoo/odoo-server.log
+    volumes:
+      - odoo-logs:/var/log/odoo
+
 volumes:
   postgres-data:
   odoo-data:
+  pgadmin:
+  opt-data:
+  odoo-logs:
 
 networks:
   traefik_default:
