@@ -1,15 +1,48 @@
 #!/usr/bin/env python3
 
-import configparser
-import os, sys
-import ast
-import subprocess
 import argparse
+import ast
+import configparser
+import glob
 import logging
+import os
+import subprocess
+import sys
+# import tempfile
 from importlib.metadata import distribution
 
-BRANCH = os.environ.get('ODOO_BRANCH', '17.0')
+BRANCH = os.environ.get('ODOO_BRANCH', '16.0')
 UNINSTALL = []
+
+
+def recursive_file_permissions(path, uid=-1, gid=-1):
+    print(f"Change owner: {path} {uid}:{gid}")
+
+    for item in glob.glob(path + '/*', recursive=True):
+        print(f"Start to change owner for {item}")
+        try:
+            os.chown(item, uid, gid)
+            print(f"Changed owner for {item}")
+        except Exception as e:
+            print('Path permissions on {0} not updated due to error {1}.'.format(item, e))
+
+        if os.path.isdir(item):
+            recursive_file_permissions(os.path.join(path, item), uid, gid)
+
+
+def recursive_git_pull(path):
+    def git_pull(git_path):
+        os.chdir(git_path)
+        subprocess.call(['git', 'fetch'])
+        subprocess.call(['git', 'pull'])
+
+    for item in glob.glob(path + '/*'):
+        if os.path.isdir(os.path.join(item, '.git')):
+            git_pull(item)
+            continue
+        if os.path.isdir(item):
+            recursive_git_pull(os.path.join(path, item))
+
 
 def get_module_logger(mod_name):
     """
@@ -45,13 +78,26 @@ def should_uninstall_requirement(requirement):
     return should_install
 
 
-def install_packages(requirement_list, target_destinations, requirements=False, force_reinstall=False):
+def install_packages(requirement_list, target_destinations, requirements=False):
     try:
         if requirements:
+            uninstall_requirements = False
             print(f"Install python requirements {requirements}...")
+            if UNINSTALL:
+                # without_uninstall = f'grep -ivE "{"|".join(UNINSTALL)}" {requirements}'
+                # uninstall_requirements = tempfile.NamedTemporaryFile(delete=False)
+                uninstall_requirements = f'/tmp/{os.path.split(requirements)[-1]}'
+                with open(uninstall_requirements, 'w') as f:
+                    subprocess.call([
+                        'grep', '-ivE', f'{"|".join(UNINSTALL)}', requirements], stdout=f)
+                if os.path.isfile(uninstall_requirements) and os.path.getsize(uninstall_requirements) > 0:
+                    requirements = uninstall_requirements
             subprocess.call(
                 [sys.executable, '-m', 'pip', 'install', '--upgrade',
                  '--target', target_destinations, '-r', requirements])
+            if uninstall_requirements:
+                os.unlink(uninstall_requirements)
+
         else:
             requirements = [
                 requirement
@@ -60,9 +106,10 @@ def install_packages(requirement_list, target_destinations, requirements=False, 
             ]
             if len(requirements) > 0:
                 print(f"Install python package {requirements}...")
-                subprocess.call(
-                    [sys.executable, '-m', 'pip', 'install', '--upgrade',
-                     '--target', target_destinations, *requirements])
+                for package in requirements:
+                    subprocess.call(
+                        [sys.executable, '-m', 'pip', 'install', '--upgrade',
+                         '--target', target_destinations, package])
             else:
                 print("Requirements already satisfied.")
     except Exception as e:
@@ -84,13 +131,12 @@ def uninstall_packages(requirement_list):
         print("Requirements already satisfied.")
 
 
-
 PRIORITY = []
 IGNORE = ['.git', 'setup', '.gitignore', '.idea']
 ADDONS = []
 
 
-def check_dir(dir_addons, links_seek=None, depends=None, main=None):
+def check_dir(dir_addons, links_seek=None, depends=None, main=None, install_requirements=None):
     if depends is None:
         depends = set()
     if links_seek is None:
@@ -100,8 +146,8 @@ def check_dir(dir_addons, links_seek=None, depends=None, main=None):
     dir_list = os.listdir(dir_addons)
     dir_list.sort(key=lambda t: t in set(PRIORITY), reverse=True)
     for file_seek in dir_list:
-        if os.path.isfile(os.path.join(file_seek, "requirements.txt")):
-            install_packages([], '/opt/python3', os.path.join(file_seek, "requirements.txt"))
+        if os.path.isfile(os.path.join(file_seek, "requirements.txt")) and install_requirements:
+            install_packages([], '/opt/python3', os.path.join(dir_addons, file_seek, "requirements.txt"))
             # subprocess.call([sys.executable, '-m', 'pip', 'install', '--target', '/opt/python3', '--ignore-installed',
             #                  '-r', os.path.join(file_seek, "requirements.txt")])
         check_file_directory = os.path.join(dir_addons, file_seek)
@@ -119,7 +165,7 @@ def check_dir(dir_addons, links_seek=None, depends=None, main=None):
                 if data.get('external_dependencies') and data['external_dependencies'].get('python'):
                     install_packages(data['external_dependencies']['python'], '/opt/python3')
             else:
-                links_seek, depends = check_dir(check_file_directory, links_seek, depends, main)
+                links_seek, depends = check_dir(check_file_directory, links_seek, depends, main, install_requirements)
     return links_seek, depends
 
 
@@ -185,7 +231,7 @@ def get_config_print(config_file):
 if __name__ == '__main__':
     config = force_update = False
     user_name = user_email = odoo_user_name = odoo_user_password = \
-        app_user_name = app_user_password = token = use_oca = use_ee = python_package = False
+        app_user_name = app_user_password = token = use_oca = use_ee = python_package = use_requirements = False
     addons = []
 
     arg_parser = argparse.ArgumentParser(description='Installing odoo modules.')
@@ -240,6 +286,8 @@ if __name__ == '__main__':
     folders = [target_dir, oca_dir, rv_dir, ee_dir]
 
     supervisor = f'{opt_dir}/odoo-{BRANCH}/supervisor.txt'
+    init = not os.path.isfile(supervisor)
+
     odoo_uid = args.odoo_uid or 100
     odoo_gid = args.odoo_gid or 100
 
@@ -259,8 +307,11 @@ if __name__ == '__main__':
         for section in config.sections():
             for key, value in config[section].items():
                 if section == 'global':
-                    if key in 'force_update':
-                        force_update = value
+                    if key == 'force_update':
+                        force_update = config.getboolean(section, key)
+
+                    if key == 'use_requirements':
+                        use_requirements = config.getboolean(section, key)
 
                 if section == 'symlinks':
                     if key == 'source_dir':
@@ -292,17 +343,17 @@ if __name__ == '__main__':
 
                 if section == 'owner':
                     if key == 'uid':
-                        user_uid = value
+                        odoo_uid = config.getint(section, key)
                     if key == 'gid':
-                        user_gid = value
+                        odoo_gid = config.getint(section, key)
 
                 if section == 'addons':
                     if key == 'use_oca':
-                        use_oca = value
+                        use_oca = config.getboolean(section, key)
                     if key == 'odoo_addons_oca':
                         odoo_addons_oca = value
                     if key == 'use_ee':
-                        use_ee = value
+                        use_ee = config.getboolean(section, key)
 
                 if section == 'uninstall':
                     if key == 'python_package':
@@ -313,7 +364,7 @@ if __name__ == '__main__':
             os.makedirs(folder)
 
     if not os.path.exists(supervisor) or force_update:
-        os.chown(odoo_dir, uid=odoo_uid, gid=odoo_gid)
+        subprocess.call(['chown', '--recursive', f'{odoo_uid}:{odoo_gid}', odoo_dir])
         github_credentials(user_name, token, user_email)
         oca_credentials(user_name, token, odoo_user_name, odoo_user_password, app_user_name, app_user_password, oca_dir,
                         force_update)
@@ -332,16 +383,20 @@ if __name__ == '__main__':
         if UNINSTALL:
             uninstall_packages(UNINSTALL)
 
-    if args.use_oca or use_oca:
+    if init and (args.use_oca or use_oca):
         install_oca_addons(oca_dir)
+    elif force_update and not init and (args.use_oca or use_oca):
+        recursive_git_pull(oca_dir)
+
+    if init and (args.use_ee or use_ee):
+        install_ee_addons(ee_dir)
+    elif force_update and not init and (args.use_ee or use_ee):
+        recursive_git_pull(ee_dir)
 
     if args.odoo_addons_oca:
         install_packages(args.odoo_addons_oca.split(','), '/mnt/extra-addons')
 
-    if args.use_ee or use_ee:
-        install_ee_addons(ee_dir)
-
-    links, dependencies = check_dir(source_dir)
+    links, dependencies = check_dir(source_dir, install_requirements=use_requirements)
     addons += list(dependencies)
 
     for link in links:
@@ -352,10 +407,20 @@ if __name__ == '__main__':
         try:
             os.symlink(source, target)
             print(f'Symbolic link: {source} -> {target}')
-            # get_module_logger(__name__).info('Source %s to %s', source, target)
         except FileExistsError:
             print(f'Duplicate: {source} to {target}')
-            # get_module_logger(__name__).info('Duplicate: %s', source)
 
-    if os.path.isfile(os.path.join('/app/', "requirements.txt")):
-        install_packages([], '/opt/python3', os.path.join('/app/', "requirements.txt"))
+    if os.path.isfile(os.path.join('/etc', 'odoo', "requirements.txt")):
+        install_packages([], '/opt/python3', os.path.join('/etc', 'odoo', "requirements.txt"))
+
+    if force_update or init:
+        print(f"Force updating owner:...")
+        recursive_file_permissions(odoo_dir, odoo_uid, odoo_gid)
+
+    print(f"""Finish:\n
+    Starting parameters:\n
+    Odoo folder: {odoo_dir}\n
+    Force: {force_update}\n
+    Use requirements: {use_requirements}\n
+    Source {source_dir} to {target_dir}\n
+    Owner: {odoo_uid}:{odoo_gid}""")

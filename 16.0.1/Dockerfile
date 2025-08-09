@@ -1,27 +1,37 @@
-FROM debian:bookworm-slim
-MAINTAINER Rosen Vladimirov <vladimirov.rosen@gmail.com>
+FROM debian:bookworm
+LABEL maintainer="Rosen Vladimirov <vladimirv.rosen@gmail.com>"
 
-SHELL ["/bin/bash", "-xo", "pipefail", "-c"]
+# Fail fast, strict vars, pipefail; show commands for easier debugging
+SHELL ["/bin/bash", "-euo", "pipefail", "-x", "-c"]
 
-# Generate locale C.UTF-8 for postgres and general locale data
-ENV LANG C.UTF-8
-ENV PIPX_BIN_DIR=/usr/local/bin
-ENV PIPX_DEFAULT_PYTHON=python3
-ENV DEBIAN_FRONTEND noninteractive
+# Build/runtime parameters
+ARG ODOO_VERSION="16.0"
+# Comma-separated list of locales in the format "ll_CC.UTF-8 UTF-8"
+# Example:
+#   --build-arg LOCALES="en_US.UTF-8 UTF-8, bg_BG.UTF-8 UTF-8"
+ARG LOCALES="C.UTF-8 UTF-8,en_US.UTF-8 UTF-8"
+# Default locale exported in the environment
+# Example:
+#   --build-arg DEFAULT_LOCALE="en_US.UTF-8"
+ARG DEFAULT_LOCALE="C.UTF-8"
 
-# Retrieve the target architecture to install the correct wkhtmltopdf package
-ARG TARGETARCH
+# Global environment
+ENV LANG=${DEFAULT_LOCALE} \
+    LC_ALL=${DEFAULT_LOCALE} \
+    ODOO_RC=/etc/odoo/odoo.conf \
+    PYTHONPATH=/opt/python3
 
-# Install some deps, lessc and less-plugin-clean-css, and wkhtmltopdf
+# Base system + runtime deps (wkhtmltopdf from Debian repo for trusted, signed install)
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         ca-certificates \
         curl \
-        git \
         dirmngr \
         fonts-noto-cjk \
+        git \
         gnupg \
-        libssl-dev \
+        locales \
+        lsb-release \
         node-less \
         npm \
         python3-venv \
@@ -31,96 +41,84 @@ RUN apt-get update && \
         python3-pdfminer \
         python3-pip \
         python3-phonenumbers \
-        python3-pyldap \
+        python3-ldap \
         python3-qrcode \
-        python3-renderpm \
+        python3-reportlab \
         python3-setuptools \
         python3-slugify \
         python3-vobject \
         python3-watchdog \
         python3-xlrd \
         python3-xlwt \
+        python3-psycopg2 \
         python3-transliterate \
+        wkhtmltopdf \
         xz-utils && \
-    if [ -z "${TARGETARCH}" ]; then \
-        TARGETARCH="$(dpkg --print-architecture)"; \
-    fi; \
-    WKHTMLTOPDF_ARCH=${TARGETARCH} && \
-    case ${TARGETARCH} in \
-    "amd64") WKHTMLTOPDF_ARCH=amd64 && WKHTMLTOPDF_SHA=e9f95436298c77cc9406bd4bbd242f4771d0a4b2 && WKHTMLTOPDF_ARCH=0.12.6.1-3/wkhtmltox_0.12.6.1-3.bookworm_${TARGETARCH}  ;; \
-    "arm64")  WKHTMLTOPDF_SHA=77bc06be5e543510140e6728e11b7c22504080d4 && WKHTMLTOPDF_ARCH=0.12.6.1-3/wkhtmltox_0.12.6.1-3.bookworm_${TARGETARCH}  ;; \
-    esac \
-    && curl -o wkhtmltox.deb -sSL https://github.com/wkhtmltopdf/packaging/releases/download/${WKHTMLTOPDF_ARCH}.deb \
-    && echo ${WKHTMLTOPDF_SHA} wkhtmltox.deb | sha1sum -c - \
-    && apt-get install -y --no-install-recommends ./wkhtmltox.deb \
-    && rm -rf /var/lib/apt/lists/* wkhtmltox.deb  \
-    && pip3 install --break-system-packages pipx \
-    && pipx ensurepath
+    update-ca-certificates && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# install latest postgresql-client
-RUN echo 'deb http://apt.postgresql.org/pub/repos/apt/ bookworm-pgdg main' > /etc/apt/sources.list.d/pgdg.list \
-    && GNUPGHOME="$(mktemp -d)" \
-    && export GNUPGHOME \
-    && repokey='B97B0AFCAA1A47F044F244A07FCC7D46ACCC4CF8' \
-    && gpg --batch --keyserver keyserver.ubuntu.com --recv-keys "${repokey}" \
-    && gpg --batch --armor --export "${repokey}" > /etc/apt/trusted.gpg.d/pgdg.gpg.asc \
-    && gpgconf --kill all \
-    && rm -rf "$GNUPGHOME" \
-    && apt-get update  \
-    && apt-get install --no-install-recommends -y postgresql-client \
-    && rm -f /etc/apt/sources.list.d/pgdg.list \
-    && rm -rf /var/lib/apt/lists/*
+# Locales: enable and generate (separate for clarity)
+RUN set -euo pipefail; \
+    IFS=',' read -r -a REQ_LOCALES <<< "${LOCALES}"; \
+    for loc in "${REQ_LOCALES[@]}"; do \
+        loc="$(echo "$loc" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"; \
+        [ -n "$loc" ] || continue; \
+        sed -i "s/^# *${loc//\//\\/}$/${loc}/" /etc/locale.gen || true; \
+        grep -qxF "${loc}" /etc/locale.gen || echo "${loc}" >> /etc/locale.gen; \
+    done && \
+    locale-gen
 
-# Install rtlcss (on Debian buster)
-RUN npm install -g rtlcss
+# Pin global npm tool needed by Odoo assets
+RUN npm install -g rtlcss@4.1.0 && npm cache clean --force
 
-# Install Odoo
-ENV ODOO_VERSION 16.0
-ARG ODOO_RELEASE=20240416
-ARG ODOO_SHA=d9418fee3ef105b40a58d89b8c7c500d34743ed5
-RUN curl -o odoo.deb -sSL http://nightly.odoo.com/${ODOO_VERSION}/nightly/deb/odoo_${ODOO_VERSION}.${ODOO_RELEASE}_all.deb \
-    && echo "${ODOO_SHA} odoo.deb" | sha1sum -c - \
-    && apt-get update \
-    && apt-get -y install --no-install-recommends ./odoo.deb \
-    && rm -rf /var/lib/apt/lists/* odoo.deb
+# PostgreSQL client (PGDG) with signed key
+RUN install -d /usr/share/postgresql-common/pgdg && \
+    curl --fail --location --show-error --proto '=https' --tlsv1.2 \
+      -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
+      https://www.postgresql.org/media/keys/ACCC4CF8.asc && \
+    echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
+      > /etc/apt/sources.list.d/pgdg.list && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends postgresql-client && \
+    rm -f /etc/apt/sources.list.d/pgdg.list && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# Copy entrypoint script and Odoo configuration file
-COPY ./entrypoint.sh /
-COPY ./odoo.conf /etc/odoo/
-COPY ./addons.conf /etc/odoo/
+# Odoo installation: fetch exact Filename and SHA256 from Packages, then verify over HTTPS
+ARG ODOO_PACKAGE_URL="https://nightly.odoo.com/${ODOO_VERSION}/nightly/deb/Packages"
+RUN set -euo pipefail; \
+    PKG_TMP="/tmp/odoo_packages" && \
+    curl --fail --location --show-error --proto '=https' --tlsv1.2 -o "${PKG_TMP}" "${ODOO_PACKAGE_URL}" && \
+    FILENAME="$(awk 'BEGIN{RS="";FS="\n"} /Package: odoo/{for(i=1;i<=NF;i++){if($i ~ /^Filename:/){sub(/^Filename: */,"",$i); print $i; exit}}}' "${PKG_TMP}")" && \
+    SHA256="$(awk 'BEGIN{RS="";FS="\n"} /Package: odoo/{for(i=1;i<=NF;i++){if($i ~ /^SHA256:/){sub(/^SHA256: */,"",$i); print $i; exit}}}' "${PKG_TMP}")" && \
+    if [[ -z "${FILENAME}" || -z "${SHA256}" ]]; then \
+        echo "ERROR: Could not determine Odoo Filename/SHA256 from Packages." >&2; exit 3; \
+    fi && \
+    ODOO_URL="https://nightly.odoo.com/${ODOO_VERSION}/nightly/deb/${FILENAME}" && \
+    curl --fail --location --show-error --proto '=https' --tlsv1.2 -o /tmp/odoo.deb "${ODOO_URL}" && \
+    echo "${SHA256}  /tmp/odoo.deb" | sha256sum -c - && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends /tmp/odoo.deb && \
+    rm -f /tmp/odoo.deb "${PKG_TMP}" && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# Set permissions and Mount /var/lib/odoo to allow restoring filestore and /mnt/extra-addons for users addons
-RUN chown odoo /etc/odoo/odoo.conf  \
-    && chown odoo /etc/odoo/addons.conf \
-    && mkdir -p /mnt/extra-addons/odoo/addons \
-    && chown -R odoo /mnt/extra-addons \
-    && mkdir -p /opt/odoo/odoo-16.0/oca \
-    && mkdir -p /opt/odoo/odoo-16.0/ee \
-    && mkdir -p /opt/odoo/odoo-16.0/rv \
-    && chown -R odoo /opt/odoo
-VOLUME ["/var/lib/odoo", "/mnt/extra-addons", "/opt/odoo"]
-COPY wait-for-psql.py /usr/local/bin/wait-for-psql.py
-COPY make_symb_links.py /usr/local/bin/make_symb_links.py
-COPY healthy_check.sh /usr/local/bin/healthy_check.sh
-RUN chmod +x /usr/local/bin/make_symb_links.py && \
-    chmod +x /usr/local/bin/wait-for-psql.py  && \
-    chmod +x /usr/local/bin/healthy_check.sh
+# Copy entrypoint, configs and helper scripts
+RUN install -d -m 0755 /etc/odoo
+COPY --chown=root:root ./entrypoint.sh /
+COPY --chown=odoo:odoo ./odoo.conf /etc/odoo/
+COPY --chown=root:root ./addons.conf /etc/odoo/
+COPY --chown=root:root ./requirements.txt /etc/odoo/
+COPY --chown=root:root ./wait-for-psql.py /usr/local/bin/wait-for-psql.py
+COPY --chown=root:root ./supervisor.py /usr/local/bin/supervisor.py
+RUN chmod 0755 /entrypoint.sh /usr/local/bin/wait-for-psql.py /usr/local/bin/supervisor.py && \
+    mkdir -p /mnt/extra-addons /opt/odoo "$PYTHONPATH" && \
+    chown -R odoo:odoo /mnt/extra-addons /opt/odoo
+
+VOLUME ["/var/lib/odoo", "/var/log/odoo", "/mnt/extra-addons", "/opt/odoo"]
 
 # Expose Odoo services
 EXPOSE 8069 8071 8072
 
-# Set the default config file
-ENV ODOO_RC /etc/odoo/odoo.conf
-
-COPY wait-for-psql.py /usr/local/bin/wait-for-psql.py
-COPY make_symb_links.py /usr/local/bin/make_symb_links.py
-RUN chmod +x /usr/local/bin/make_symb_links.py
-
-# Set default user when running the container
+# Default user and process
 USER odoo
-#HEALTHCHECK CMD curl --fail -b /tmp/cookies --cookie-jar /tmp/cookies -s -H "Content-Type: application/json" -X POST -d '{"jsonrpc":"2.0","method":"call","params":{"method":"list","service":"db","args":{}}}' 0.0.0.0:8069/jsonrpc || exit 1
-
-HEALTHCHECK CMD /usr/local/bin/healt_check.py
-
 ENTRYPOINT ["/entrypoint.sh"]
 CMD ["odoo"]
