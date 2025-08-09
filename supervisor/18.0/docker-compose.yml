@@ -1,0 +1,22 @@
+version: '3.8'
+
+services:
+  odoo:
+    container_name: odoo-supervisor-17
+    image: vladimirovrosen/odoo:supervisor-17.0
+    hostname: odoo-supervisor-17
+#    environment:
+#      - ODOO_BRANCH="17.0"
+    networks:
+      - default
+    volumes:
+      - type: bind
+        source: /etc/odoo/odoo-17.0/addons.conf
+        target: /etc/odoo/addons.conf
+      - odoo-17-data:/var/lib/odoo
+      - odoo-17-opt:/opt/odoo
+      - odoo-17-python3:/opt/python3
+volumes:
+  odoo-17-data:
+  odoo-17-opt:
+  odoo-17-python3:

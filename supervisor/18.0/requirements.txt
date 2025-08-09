@@ -1,0 +1,14 @@
+lxml~=5.3.0
+lxml[html_clean]
+pyOpenSSL~=25.0.0
+cryptography~=44.0.1
+openpyxl~=3.1.5
+polyglot
+python-dateutil~=2.9.0post0
+zlib~=1.2.13
+openssl~=3.0.16
+typing_extensions~=4.12.2
+pip~=25.0
+setuptools~=75.8.0
+cyrtranslit~=1.1.1
+langdetect~=1.0.9
