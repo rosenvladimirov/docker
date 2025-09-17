@@ -142,13 +142,18 @@ def check_dir(dir_addons, links_seek=None, depends=None, main=None, install_requ
         links_seek = []
     if main is None:
         main = []
-
+    # print(f"path: {dir_addons + '/*'}")
     for file_seek in sorted(glob.glob(dir_addons + '/*', recursive=True), key=lambda t: t in set(PRIORITY), reverse=True):
         clear_name = os.path.split(file_seek)[-1]
         manifest_file = os.path.join(file_seek, '__manifest__.py')
         requirements_file = os.path.join(file_seek, "requirements.txt")
+        # print(f"Check {file_seek}...")
+        if file_seek.find('setup') != -1:
+            continue
 
+        # print(f"Found {requirements_file} start to install")
         if os.path.exists(requirements_file) and install_requirements:
+            print(f"Founded {requirements_file} start to install")
             install_packages([],
                              '/opt/python3',
                              os.path.join(dir_addons, file_seek, "requirements.txt"))
@@ -161,7 +166,7 @@ def check_dir(dir_addons, links_seek=None, depends=None, main=None, install_requ
                 for line in data['depends']:
                     if line not in main:
                         depends.update([line])
-            if data.get('external_dependencies') and data['external_dependencies'].get('python'):
+            if data.get('external_dependencies') and data['external_dependencies'].get('python') and install_requirements:
                 install_packages(data['external_dependencies']['python'], '/opt/python3')
         else:
             links_seek, depends = check_dir(file_seek, links_seek, depends, main, install_requirements)
@@ -260,6 +265,11 @@ if __name__ == '__main__':
                             action='store_true',
                             dest='force_update',
                             help='Force update config files and permissions',
+                            default=False)
+    arg_parser.add_argument('--force-requirements',
+                            action='store_true',
+                            dest='use_requirements',
+                            help='Force requirements config files and permissions',
                             default=False)
     arg_parser.add_argument('--addons-ее',
                             action='store_true',
@@ -397,10 +407,11 @@ if __name__ == '__main__':
 
     links, dependencies = check_dir(source_dir, install_requirements=use_requirements)
     addons += list(dependencies)
-
+    # print(f"Addons: {addons} - {links}")
     for link in links:
         source = os.path.join(link[0], link[1])
         target = os.path.join(target_dir, link[1])
+        # print(f"Link {link[1]}: {source} to {target} ...")
         if link[1] not in addons:
             continue
         try:

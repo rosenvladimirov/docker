@@ -21,7 +21,7 @@ RUN mkdir -p /etc/odoo && \
     mkdir /var/lib/odoo && \
     mkdir -p /root/.ssh
 
-RUN ssh-keyscan github.com >> /root/.ssh/known_hosts
+#RUN ssh-keyscan github.com >> /root/.ssh/known_hosts
 
 RUN pip3 install --upgrade pip && \
     pip3 install pipx && \

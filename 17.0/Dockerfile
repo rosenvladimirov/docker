@@ -1,10 +1,10 @@
 FROM debian:bookworm
-MAINTAINER Rosen Vladimirov <vladimirv.rosen@gmail.com>
+LABEL maintainer="Rosen Vladimirov <vladimirv.rosen@gmail.com>"
 
 SHELL ["/bin/bash", "-xo", "pipefail", "-c"]
 
 # Generate locale C.UTF-8 for postgres and general locale data
-ENV LANG en_US.UTF-8
+ENV LANG=en_US.UTF-8
 ENV PYTHONPATH=/opt/python3
 
 # Retrieve the target architecture to install the correct wkhtmltopdf package
@@ -28,6 +28,11 @@ RUN apt-get update && \
         libssl-dev \
         node-less \
         npm \
+        gcc \
+        g++ \
+        libicu-dev \
+        pkg-config \
+        python3-dev \
         python3-magic \
         python3-num2words \
         python3-odf \
@@ -85,6 +90,8 @@ RUN ODOO_SHA=$(curl -sSL https://nightly.odoo.com/17.0/nightly/deb/Packages | gr
     && apt-get -y install --no-install-recommends ./odoo.deb \
     && rm -rf /var/lib/apt/lists/* odoo.deb
 
+RUN pip3 install --upgrade --break-system-packages pip
+
 # Copy entrypoint script and Odoo configuration file
 COPY --chown=root:root ./entrypoint.sh /
 COPY ./odoo.conf /etc/odoo/
@@ -93,11 +100,11 @@ COPY ./addons.conf /etc/odoo/
 # Set permissions and Mount /var/lib/odoo to allow restoring filestore and /mnt/extra-addons for users addons
 RUN chown odoo /etc/odoo/odoo.conf \
     && mkdir -p /mnt/extra-addons \
-    && chown -R odoo /mnt/extra-addons \
+    && chown -R odoo:odoo /mnt/extra-addons \
     && mkdir -p /opt/odoo \
     && mkdir -p $PYTHONPATH \
-    && chown -R odoo /opt/odoo
-VOLUME ["/var/lib/odoo", "/mnt/extra-addons", "/opt/odoo"]
+    && chown -R odoo:odoo /opt/odoo
+VOLUME ["/var/lib/odoo", "/var/log/odoo", "/mnt/extra-addons", "/opt/odoo"]
 
 # Expose Odoo services
 EXPOSE 8069 8071 8072
