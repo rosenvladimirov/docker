@@ -10,6 +10,16 @@ import subprocess
 import sys
 from importlib.metadata import distribution, PackageNotFoundError
 from typing import Iterable, List, Optional, Sequence, Tuple, Dict
+import json
+import time
+
+# GitHub integration
+try:
+    from github import Github, GithubException
+
+    GITHUB_AVAILABLE = True
+except ImportError:
+    GITHUB_AVAILABLE = False
 
 # Setup logging
 logging.basicConfig(
@@ -17,6 +27,9 @@ logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+if not GITHUB_AVAILABLE:
+    logger.warning("PyGithub not available. Install with: pip install PyGithub")
 
 # Constants
 BRANCH = os.environ.get('ODOO_BRANCH', '18.0')
@@ -175,6 +188,363 @@ def uninstall_packages(requirement_list: Iterable[str]) -> None:
                     raise
     else:
         logger.info("No packages to uninstall - requirements already satisfied.")
+
+
+def github_check_repository_status(repo_path: str, token: str = None) -> Dict:
+    """Check status of a local git repository using PyGithub API."""
+    status = {
+        'path': repo_path,
+        'name': os.path.basename(repo_path),
+        'is_git': False,
+        'has_remote': False,
+        'current_branch': None,
+        'local_commit': None,
+        'remote_commit': None,
+        'behind_commits': 0,
+        'ahead_commits': 0,
+        'is_clean': True,
+        'last_update': None,
+        'error': None
+    }
+
+    try:
+        if not os.path.exists(os.path.join(repo_path, '.git')):
+            return status
+
+        status['is_git'] = True
+
+        # Get current branch
+        result = subprocess.run(
+            ['git', 'rev-parse', '--abbrev-ref', 'HEAD'],
+            cwd=repo_path, capture_output=True, text=True
+        )
+        if result.returncode == 0:
+            status['current_branch'] = result.stdout.strip()
+
+        # Get local commit
+        result = subprocess.run(
+            ['git', 'rev-parse', 'HEAD'],
+            cwd=repo_path, capture_output=True, text=True
+        )
+        if result.returncode == 0:
+            status['local_commit'] = result.stdout.strip()
+
+        # Get remote URL
+        result = subprocess.run(
+            ['git', 'config', '--get', 'remote.origin.url'],
+            cwd=repo_path, capture_output=True, text=True
+        )
+        if result.returncode == 0:
+            remote_url = result.stdout.strip()
+            status['has_remote'] = True
+
+            # Check if it's a GitHub repository and use API
+            if 'github.com' in remote_url and GITHUB_AVAILABLE and token:
+                try:
+                    # Extract repo full name
+                    if 'github.com/' in remote_url:
+                        repo_full_name = remote_url.split('github.com/')[-1].replace('.git', '')
+                        if repo_full_name.startswith('oauth2:'):
+                            repo_full_name = repo_full_name.split('@github.com/')[-1]
+                    else:
+                        repo_full_name = remote_url.replace('.git', '')
+
+                    g = Github(token)
+                    github_repo = g.get_repo(repo_full_name)
+
+                    # Get remote commit for current branch
+                    try:
+                        branch_name = status['current_branch'] or github_repo.default_branch
+                        remote_branch = github_repo.get_branch(branch_name)
+                        status['remote_commit'] = remote_branch.commit.sha
+                        status['last_update'] = remote_branch.commit.commit.author.date.isoformat()
+
+                        # Compare commits
+                        if status['local_commit'] and status['remote_commit']:
+                            if status['local_commit'] != status['remote_commit']:
+                                # Get commit comparison
+                                try:
+                                    comparison = github_repo.compare(status['local_commit'], status['remote_commit'])
+                                    status['behind_commits'] = comparison.ahead_by
+                                    status['ahead_commits'] = comparison.behind_by
+                                except:
+                                    # Fallback to simple comparison
+                                    status['behind_commits'] = 1 if status['local_commit'] != status[
+                                        'remote_commit'] else 0
+
+                    except GithubException as e:
+                        if e.status != 404:  # Branch not found is OK
+                            status['error'] = f"GitHub API error: {e}"
+
+                    g.close()
+
+                except Exception as e:
+                    status['error'] = f"GitHub API error: {e}"
+
+        # Check if working directory is clean
+        result = subprocess.run(
+            ['git', 'status', '--porcelain'],
+            cwd=repo_path, capture_output=True, text=True
+        )
+        if result.returncode == 0:
+            status['is_clean'] = len(result.stdout.strip()) == 0
+
+    except Exception as e:
+        status['error'] = str(e)
+
+    return status
+
+
+def github_clone_or_update_repo(repo_url: str, target_dir: str, branch: str = None,
+                                token: str = None, force_update: bool = False) -> bool:
+    """Clone or update a GitHub repository using PyGithub API."""
+    try:
+        repo_name = os.path.basename(repo_url.replace('.git', ''))
+        repo_path = os.path.join(target_dir, repo_name)
+
+        # Extract repository owner/name from URL
+        if 'github.com/' in repo_url:
+            repo_full_name = repo_url.split('github.com/')[-1].replace('.git', '')
+        else:
+            repo_full_name = repo_url.replace('.git', '')
+
+        # Prepare URL with token for git operations
+        if token and 'github.com' in repo_url:
+            if repo_url.startswith('https://'):
+                auth_url = repo_url.replace('https://', f'https://oauth2:{token}@')
+            else:
+                auth_url = f'https://oauth2:{token}@github.com/{repo_full_name}'
+        else:
+            auth_url = repo_url
+
+        if os.path.exists(repo_path):
+            if force_update:
+                logger.info(f"Updating repository: {repo_name}")
+
+                # Use PyGithub to get repository info and check for updates
+                if GITHUB_AVAILABLE and token:
+                    try:
+                        g = Github(token)
+                        github_repo = g.get_repo(repo_full_name)
+
+                        # Get current local commit
+                        local_commit = subprocess.run(
+                            ['git', 'rev-parse', 'HEAD'],
+                            cwd=repo_path,
+                            capture_output=True,
+                            text=True
+                        ).stdout.strip()
+
+                        # Get remote commit for branch
+                        target_branch = branch or github_repo.default_branch
+                        try:
+                            remote_branch = github_repo.get_branch(target_branch)
+                            remote_commit = remote_branch.commit.sha
+
+                            if local_commit != remote_commit:
+                                logger.info(
+                                    f"Repository {repo_name} has updates: {local_commit[:8]} -> {remote_commit[:8]}")
+
+                                # Fetch and pull using git
+                                run_cmd(['git', 'fetch', '--all'], cwd=repo_path)
+                                if branch:
+                                    run_cmd(['git', 'checkout', branch], cwd=repo_path)
+                                run_cmd(['git', 'pull'], cwd=repo_path)
+
+                                logger.info(f"✓ Repository {repo_name} updated successfully")
+                            else:
+                                logger.info(f"Repository {repo_name} is already up to date")
+
+                        except GithubException as e:
+                            if e.status == 404:
+                                logger.warning(f"Branch {target_branch} not found in {repo_name}, using default branch")
+                                run_cmd(['git', 'fetch', '--all'], cwd=repo_path)
+                                run_cmd(['git', 'pull'], cwd=repo_path)
+                            else:
+                                raise
+
+                        g.close()
+
+                    except Exception as e:
+                        logger.warning(f"GitHub API error for {repo_name}: {e}. Falling back to git commands")
+                        # Fallback to git commands
+                        run_cmd(['git', 'fetch', '--all'], cwd=repo_path)
+                        if branch:
+                            run_cmd(['git', 'checkout', branch], cwd=repo_path)
+                        run_cmd(['git', 'pull'], cwd=repo_path)
+                else:
+                    # Fallback to git commands when PyGithub not available
+                    logger.debug(f"Using git commands for {repo_name} (PyGithub not available or no token)")
+                    run_cmd(['git', 'fetch', '--all'], cwd=repo_path)
+                    if branch:
+                        run_cmd(['git', 'checkout', branch], cwd=repo_path)
+                    run_cmd(['git', 'pull'], cwd=repo_path)
+            else:
+                logger.debug(f"Repository already exists: {repo_name}")
+        else:
+            logger.info(f"Cloning repository: {repo_name}")
+            clone_cmd = ['git', 'clone']
+            if branch:
+                clone_cmd.extend(['--branch', branch])
+            clone_cmd.extend([auth_url, repo_path])
+            run_cmd(clone_cmd, cwd=target_dir)
+
+        return True
+    except Exception as e:
+        logger.error(f"Error with repository {repo_url}: {e}")
+        if STRICT_MODE:
+            raise
+        return False
+
+
+def github_scan_and_report_repositories(base_dir: str, token: str = None) -> List[Dict]:
+    """Scan directory for git repositories and report their status."""
+    if not os.path.exists(base_dir):
+        logger.warning(f"Directory does not exist: {base_dir}")
+        return []
+
+    repositories = []
+    logger.info(f"Scanning for git repositories in: {base_dir}")
+
+    for item in glob.glob(os.path.join(base_dir, '*')):
+        if os.path.isdir(item):
+            status = github_check_repository_status(item, token)
+            if status['is_git']:
+                repositories.append(status)
+
+                # Log repository status
+                repo_name = status['name']
+                branch = status['current_branch'] or 'unknown'
+
+                if status['error']:
+                    logger.warning(f"Repository {repo_name}: ERROR - {status['error']}")
+                elif not status['has_remote']:
+                    logger.info(f"Repository {repo_name}: Local only (no remote)")
+                elif status['behind_commits'] > 0:
+                    logger.warning(f"Repository {repo_name}: Behind by {status['behind_commits']} commits on {branch}")
+                elif status['ahead_commits'] > 0:
+                    logger.info(f"Repository {repo_name}: Ahead by {status['ahead_commits']} commits on {branch}")
+                elif not status['is_clean']:
+                    logger.warning(f"Repository {repo_name}: Working directory not clean")
+                else:
+                    logger.info(f"Repository {repo_name}: Up to date on {branch}")
+
+    logger.info(f"Found {len(repositories)} git repositories")
+    return repositories
+
+
+def github_api_get_latest_release(repo_full_name: str, token: str = None) -> Optional[Dict]:
+    """Get latest release info from GitHub API."""
+    if not GITHUB_AVAILABLE:
+        logger.warning("PyGithub not available for API operations")
+        return None
+
+    try:
+        g = Github(token) if token else Github()
+        repo = g.get_repo(repo_full_name)
+
+        try:
+            latest_release = repo.get_latest_release()
+            return {
+                'tag_name': latest_release.tag_name,
+                'name': latest_release.title or latest_release.tag_name,
+                'published_at': latest_release.published_at.isoformat(),
+                'zipball_url': latest_release.zipball_url,
+                'tarball_url': latest_release.tarball_url
+            }
+        except GithubException as e:
+            if e.status == 404:
+                logger.debug(f"No releases found for {repo_full_name}")
+                return None
+            raise
+
+    except Exception as e:
+        logger.error(f"Error getting latest release for {repo_full_name}: {e}")
+        return None
+
+
+def github_update_repositories(github_repos: List[Dict], target_base_dir: str,
+                               token: str = None, force_update: bool = False) -> int:
+    """Update multiple GitHub repositories using PyGithub API."""
+    if not github_repos:
+        logger.debug("No GitHub repositories configured")
+        return 0
+
+    logger.info(f"Processing {len(github_repos)} GitHub repositories...")
+    updated_count = 0
+
+    # Initialize GitHub API client if available
+    github_client = None
+    if GITHUB_AVAILABLE and token:
+        try:
+            github_client = Github(token)
+            logger.info("GitHub API client initialized successfully")
+        except Exception as e:
+            logger.warning(f"Failed to initialize GitHub API client: {e}")
+
+    for repo_config in github_repos:
+        repo_url = repo_config.get('url', '')
+        branch = repo_config.get('branch', BRANCH)
+        subdir = repo_config.get('subdir', '')
+
+        if not repo_url:
+            logger.warning("Repository URL missing in configuration")
+            continue
+
+        target_dir = os.path.join(target_base_dir, subdir) if subdir else target_base_dir
+        os.makedirs(target_dir, exist_ok=True)
+
+        # Check for updates using PyGithub before updating
+        if github_client and force_update:
+            try:
+                repo_name = os.path.basename(repo_url.replace('.git', ''))
+                repo_path = os.path.join(target_dir, repo_name)
+
+                if os.path.exists(repo_path):
+                    # Extract repo full name for API
+                    if 'github.com/' in repo_url:
+                        repo_full_name = repo_url.split('github.com/')[-1].replace('.git', '')
+                    else:
+                        repo_full_name = repo_url.replace('.git', '')
+
+                    api_repo = github_client.get_repo(repo_full_name)
+
+                    # Get repository information
+                    logger.info(f"Repository: {repo_full_name}")
+                    logger.info(f"  Description: {api_repo.description}")
+                    logger.info(f"  Default branch: {api_repo.default_branch}")
+                    logger.info(f"  Last updated: {api_repo.updated_at}")
+                    logger.info(f"  Stars: {api_repo.stargazers_count}")
+
+                    # Check latest commit
+                    target_branch = branch or api_repo.default_branch
+                    try:
+                        remote_branch = api_repo.get_branch(target_branch)
+                        latest_commit = remote_branch.commit
+                        logger.info(
+                            f"  Latest commit ({target_branch}): {latest_commit.sha[:8]} by {latest_commit.commit.author.name}")
+                        logger.info(f"  Commit message: {latest_commit.commit.message.strip()}")
+                        logger.info(f"  Commit date: {latest_commit.commit.author.date}")
+
+                    except GithubException as e:
+                        if e.status == 404:
+                            logger.warning(f"Branch {target_branch} not found, will use default branch")
+                        else:
+                            logger.warning(f"Error getting branch info: {e}")
+
+            except Exception as e:
+                logger.warning(f"Error getting repository info via API: {e}")
+
+        if github_clone_or_update_repo(repo_url, target_dir, branch, token, force_update):
+            updated_count += 1
+
+    logger.info(f"Successfully processed {updated_count} repositories")
+
+    # Close GitHub client
+    if github_client:
+        github_client.close()
+
+    return updated_count
 
 
 def debug_scan_directory(path: str) -> None:
@@ -388,6 +758,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--init-container', action='store_true', dest='init_container',
                         help='Enable strict init-container mode (fail fast, force requirements & update).',
                         default=False)
+    parser.add_argument('--github-update', action='store_true', dest='github_update',
+                        help='Update only GitHub repositories (no system changes)', default=False)
+    parser.add_argument('--github-status', action='store_true', dest='github_status',
+                        help='Check status of all git repositories (no changes)', default=False)
+    parser.add_argument('--github-only', action='store_true', dest='github_only',
+                        help='Check status AND update GitHub repositories (no system changes)', default=False)
     parser.add_argument('-u', '--uid', dest='odoo_uid', help='Odoo owner UID')
     parser.add_argument('-g', '--gid', dest='odoo_gid', help='Odoo owner GID')
     parser.add_argument('-v', '--verbose', action='store_true', help='Enable verbose logging')
@@ -415,6 +791,8 @@ def extract_settings_from_config(config: configparser.ConfigParser) -> Dict[str,
         'use_ee': False,
         'odoo_addons_oca': None,
         'python_package': None,
+        'github_repositories': [],
+        'github_update_on_init': False,
     }
 
     for section in config.sections():
@@ -438,6 +816,21 @@ def extract_settings_from_config(config: configparser.ConfigParser) -> Dict[str,
                     settings['user_email'] = value
                 if key == 'password':
                     settings['token'] = value
+                if key == 'update_on_init':
+                    settings['github_update_on_init'] = config.getboolean(section, key)
+                if key == 'repositories':
+                    # Parse repositories JSON format
+                    # Expected format:
+                    # [{"url": "https://github.com/user/repo1", "branch": "18.0", "subdir": "custom"},
+                    #  {"url": "https://github.com/user/repo2", "subdir": "third-party"}]
+                    try:
+                        repos_data = json.loads(value)
+                        if isinstance(repos_data, list):
+                            settings['github_repositories'] = repos_data
+                    except json.JSONDecodeError:
+                        # Fallback to comma-separated format
+                        repos = [r.strip() for r in value.split(',') if r.strip()]
+                        settings['github_repositories'] = [{'url': repo} for repo in repos]
             elif section == 'odoo':
                 if key == 'username':
                     settings['odoo_user_name'] = value
@@ -495,6 +888,16 @@ def main() -> int:
 
     logger.info(f"Starting supervisor with init_mode={init_mode}, strict_mode={STRICT_MODE}")
 
+    if github_only_mode:
+        if args.github_only:
+            logger.info("🔄 GitHub-only mode: checking status AND updating repositories")
+        elif args.github_update:
+            logger.info("🔄 GitHub update mode: updating repositories only")
+        elif args.github_status:
+            logger.info("🔍 GitHub status mode: checking repository status only")
+    else:
+        logger.info("🔧 Full supervisor mode: performing complete system setup")
+
     # Set up directories
     opt_dir = DEFAULT_OPT_DIR
     source_dir = args.source_dir or f'{opt_dir}'
@@ -502,7 +905,7 @@ def main() -> int:
     target_dir = args.target_dir or f'{odoo_dir}/.local/share/Odoo/addons/{BRANCH}'
     oca_dir = f'{source_dir}/oca'
     ee_dir = f'{source_dir}/ee'
-    folders = [target_dir, oca_dir, ee_dir]
+    folders = [target_dir]  # Only target_dir is always created
 
     supervisor = f'{source_dir}/supervisor.txt'
     init = not os.path.isfile(supervisor)
@@ -515,6 +918,19 @@ def main() -> int:
     config = configparser.ConfigParser()
     config.read(args.conf, "utf-8")
     settings = extract_settings_from_config(config)
+
+    # Check if only GitHub operations are requested
+    github_only_mode = (args.github_update or args.github_status or args.github_only) and not (
+            args.force_update or args.init_container or init_mode
+    )
+
+    # Set flags for GitHub-only mode
+    if args.github_only:
+        args.github_status = True
+        args.github_update = True
+
+    if github_only_mode:
+        logger.info("GitHub-only mode: skipping system initialization")
 
     # Apply configuration settings
     force_update = bool(settings['force_update']) or args.force_update
@@ -529,6 +945,8 @@ def main() -> int:
     odoo_user_password = settings['odoo_user_password']
     app_user_name = settings['app_user_name']
     app_user_password = settings['app_user_password']
+    github_repositories = settings['github_repositories']
+    github_update_on_init = settings['github_update_on_init']
 
     if settings['odoo_uid'] is not None:
         odoo_uid = int(settings['odoo_uid'])
@@ -540,6 +958,31 @@ def main() -> int:
     odoo_addons_oca = settings['odoo_addons_oca']
     python_package = settings['python_package']
 
+    # Add conditional directories based on configuration
+    if use_oca:
+        folders.append(oca_dir)
+
+    if use_ee:
+        folders.append(ee_dir)
+
+    # Create directories for GitHub repositories based on config
+    github_dirs = set()
+    if github_repositories:
+        for repo_config in github_repositories:
+            subdir = repo_config.get('subdir', '').strip()
+            if subdir:
+                github_dir = os.path.join(source_dir, subdir)
+                github_dirs.add(github_dir)
+                folders.append(github_dir)
+                logger.debug(f"Will create GitHub directory: {github_dir}")
+            else:
+                # Default to source_dir if no subdir specified
+                github_dirs.add(source_dir)
+
+    logger.info(f"Configured directories: {folders}")
+    if github_dirs:
+        logger.info(f"GitHub target directories: {list(github_dirs)}")
+
     # Init mode forces requirements and update to ensure full preparation
     if init_mode:
         use_requirements = True
@@ -548,6 +991,11 @@ def main() -> int:
     logger.info(f"Configuration: source_dir={source_dir}, target_dir={target_dir}")
     logger.info(f"Settings: force_update={force_update}, use_requirements={use_requirements}")
     logger.info(f"Addons: use_oca={use_oca}, use_ee={use_ee}")
+    if github_repositories:
+        github_subdirs = [r.get('subdir', 'source_dir') for r in github_repositories]
+        logger.info(f"GitHub: {len(github_repositories)} repositories → {github_subdirs}")
+    else:
+        logger.info("GitHub: No repositories configured")
 
     # DEBUG: Show directory structure in verbose mode
     if args.verbose:
@@ -559,6 +1007,81 @@ def main() -> int:
         logger.debug(f"Created directory: {folder}")
 
     try:
+        # Handle GitHub-only operations
+        if github_only_mode:
+            logger.info("Executing GitHub-only operations...")
+
+            # GitHub repositories status check
+            if args.github_status:
+                logger.info("Checking status of all git repositories...")
+                all_repos = []
+
+                # Check all configured directories for git repos
+                check_dirs = [source_dir]
+                if use_oca and os.path.exists(oca_dir):
+                    check_dirs.append(oca_dir)
+                if use_ee and os.path.exists(ee_dir):
+                    check_dirs.append(ee_dir)
+
+                # Add GitHub subdirectories from config
+                if github_repositories:
+                    for repo_config in github_repositories:
+                        subdir = repo_config.get('subdir', '').strip()
+                        if subdir:
+                            github_subdir = os.path.join(source_dir, subdir)
+                            if os.path.exists(github_subdir) and github_subdir not in check_dirs:
+                                check_dirs.append(github_subdir)
+
+                for check_dir in check_dirs:
+                    if os.path.exists(check_dir):
+                        repos = github_scan_and_report_repositories(check_dir, token)
+                        all_repos.extend(repos)
+
+                if all_repos:
+                    outdated_repos = [r for r in all_repos if r['behind_commits'] > 0]
+                    dirty_repos = [r for r in all_repos if not r['is_clean']]
+                    error_repos = [r for r in all_repos if r['error']]
+
+                    logger.info(f"Repository status summary:")
+                    logger.info(f"  Total repositories: {len(all_repos)}")
+                    logger.info(f"  Outdated: {len(outdated_repos)}")
+                    logger.info(f"  Dirty (uncommitted changes): {len(dirty_repos)}")
+                    logger.info(f"  Errors: {len(error_repos)}")
+
+                    if outdated_repos:
+                        logger.warning("Outdated repositories found:")
+                        for repo in outdated_repos:
+                            logger.warning(f"  - {repo['name']}: {repo['behind_commits']} commits behind")
+
+                    if error_repos:
+                        logger.error("Repositories with errors:")
+                        for repo in error_repos:
+                            logger.error(f"  - {repo['name']}: {repo['error']}")
+                else:
+                    logger.info("No git repositories found")
+
+            # GitHub repositories update
+            if (args.github_update or args.github_only) and github_repositories:
+                logger.info("Updating GitHub repositories...")
+                github_update_repositories(
+                    github_repositories,
+                    source_dir,  # Base directory, each repo will use its own subdir
+                    token,
+                    True  # Always force update when explicitly requested
+                )
+            elif (args.github_update or args.github_only) and not github_repositories:
+                logger.warning("GitHub update requested but no repositories configured")
+
+            if args.github_only:
+                logger.info("✅ GitHub status check and update completed successfully!")
+            elif args.github_update:
+                logger.info("✅ GitHub repositories updated successfully!")
+            elif args.github_status:
+                logger.info("✅ GitHub status check completed!")
+
+            return 0
+
+        # Standard full supervisor operations
         # Initialize or update configuration
         if not os.path.exists(supervisor) or force_update:
             logger.info("Initializing or updating supervisor configuration")
@@ -596,6 +1119,71 @@ def main() -> int:
             if UNINSTALL:
                 logger.info(f"Uninstalling packages: {UNINSTALL}")
                 uninstall_packages(UNINSTALL)
+
+        # GitHub repositories status check (only in full mode)
+        if args.github_status and not github_only_mode:
+            logger.info("Checking status of all git repositories...")
+            all_repos = []
+
+            # Check all configured directories for git repos
+            check_dirs = [source_dir]
+            if use_oca and os.path.exists(oca_dir):
+                check_dirs.append(oca_dir)
+            if use_ee and os.path.exists(ee_dir):
+                check_dirs.append(ee_dir)
+
+            # Add GitHub subdirectories from config
+            if github_repositories:
+                for repo_config in github_repositories:
+                    subdir = repo_config.get('subdir', '').strip()
+                    if subdir:
+                        github_subdir = os.path.join(source_dir, subdir)
+                        if os.path.exists(github_subdir) and github_subdir not in check_dirs:
+                            check_dirs.append(github_subdir)
+
+            for check_dir in check_dirs:
+                if os.path.exists(check_dir):
+                    repos = github_scan_and_report_repositories(check_dir, token)
+                    all_repos.extend(repos)
+
+            if all_repos:
+                outdated_repos = [r for r in all_repos if r['behind_commits'] > 0]
+                dirty_repos = [r for r in all_repos if not r['is_clean']]
+                error_repos = [r for r in all_repos if r['error']]
+
+                logger.info(f"Repository status summary:")
+                logger.info(f"  Total repositories: {len(all_repos)}")
+                logger.info(f"  Outdated: {len(outdated_repos)}")
+                logger.info(f"  Dirty (uncommitted changes): {len(dirty_repos)}")
+                logger.info(f"  Errors: {len(error_repos)}")
+
+                if outdated_repos:
+                    logger.warning("Outdated repositories found:")
+                    for repo in outdated_repos:
+                        logger.warning(f"  - {repo['name']}: {repo['behind_commits']} commits behind")
+
+                if error_repos:
+                    logger.error("Repositories with errors:")
+                    for repo in error_repos:
+                        logger.error(f"  - {repo['name']}: {repo['error']}")
+
+        # GitHub repositories update - independent of force_update
+        should_update_github = (
+                (args.github_update and not github_only_mode) or
+                (init and github_update_on_init) or
+                (force_update and github_repositories)  # Only if force_update AND repos configured
+        )
+
+        if should_update_github and github_repositories:
+            logger.info("Updating GitHub repositories...")
+            # For GitHub update, always force repository updates regardless of global force_update
+            github_force_update = args.github_update or force_update or (init and github_update_on_init)
+            github_update_repositories(
+                github_repositories,
+                source_dir,  # Base directory, each repo will use its own subdir
+                token,
+                github_force_update
+            )
 
         # Prepare OCA/EE trees
         if init and use_oca:
@@ -692,6 +1280,12 @@ def main() -> int:
 
         # Success summary
         logger.info("Supervisor completed successfully!")
+
+        # GitHub status summary only if not in GitHub-only mode
+        github_status_info = ""
+
+        github_info = f"• GitHub repositories: {len(github_repositories)} configured" if github_repositories else ""
+
         print(f"""
 ═══════════════════════════════════════════════════════════════
 🎉 SUPERVISOR ЗАВЪРШЕН УСПЕШНО! 🎉
@@ -706,6 +1300,8 @@ def main() -> int:
    • Собственик: {odoo_uid}:{odoo_gid}
    • Създадени symlinks: {symlinks_created}
    • Намерени зависимости: {len(addons)}
+   {github_info}
+   {github_status_info}
 
 ═══════════════════════════════════════════════════════════════
         """)
