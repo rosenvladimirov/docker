@@ -1,0 +1,137 @@
+name: Build and Push Docker Image
+
+on:
+  push:
+    branches:
+      - main
+      - master
+      - develop
+    paths:
+      - '17.0/**'
+      - '18.0/**'
+      - '.github/workflows/docker-build.yml'
+  pull_request:
+    branches:
+      - main
+      - master
+    paths:
+      - '17.0/**'
+      - '18.0/**'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Odoo version to build (e.g., 17.0, 18.0, or "all")'
+        required: true
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - 17.0
+          - 18.0
+
+env:
+  DOCKER_HUB_USERNAME: rosenvladimirov
+  IMAGE_NAME: rosenvladimirov/odoo
+
+jobs:
+  detect-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      versions: ${{ steps.filter.outputs.versions }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect changed versions
+        id: filter
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            # Ръчно задействане
+            if [ "${{ github.event.inputs.version }}" = "all" ]; then
+              VERSIONS='["17.0", "18.0"]'
+            else
+              VERSIONS='["${{ github.event.inputs.version }}"]'
+            fi
+          else
+            # Автоматично задействане - детектиране на промени
+            CHANGED_FILES=$(git diff --name-only ${{ github.event.before }} ${{ github.sha }} 2>/dev/null || echo "17.0/")
+            VERSIONS="[]"
+            
+            if echo "$CHANGED_FILES" | grep -q "^17.0/"; then
+              VERSIONS=$(echo "$VERSIONS" | jq '. += ["17.0"]')
+            fi
+            
+            if echo "$CHANGED_FILES" | grep -q "^18.0/"; then
+              VERSIONS=$(echo "$VERSIONS" | jq '. += ["18.0"]')
+            fi
+            
+            # Ако няма открити промени или е първи push, билдвай всички
+            if [ "$VERSIONS" = "[]" ]; then
+              VERSIONS='["17.0", "18.0"]'
+            fi
+          fi
+          
+          echo "versions=$VERSIONS" >> $GITHUB_OUTPUT
+          echo "Will build versions: $VERSIONS"
+
+  build-and-push:
+    needs: detect-changes
+    runs-on: ubuntu-latest
+    if: needs.detect-changes.outputs.versions != '[]'
+    strategy:
+      matrix:
+        version: ${{ fromJson(needs.detect-changes.outputs.versions) }}
+      fail-fast: false
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_HUB_USERNAME }}
+          password: ${{ secrets.DOCKER_HUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          tags: |
+            # Version-specific tags
+            type=raw,value=bookworm-${{ matrix.version }}
+            type=raw,value=${{ matrix.version }}
+            # Latest tag only for 18.0 on main branch
+            type=raw,value=latest,enable=${{ matrix.version == '18.0' && github.ref == 'refs/heads/main' }}
+            # Branch name
+            type=ref,event=branch,suffix=-${{ matrix.version }}
+            # SHA
+            type=sha,prefix=${{ matrix.version }}-,format=short
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./${{ matrix.version }}/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=registry,ref=${{ env.IMAGE_NAME }}:buildcache-${{ matrix.version }}
+          cache-to: type=registry,ref=${{ env.IMAGE_NAME }}:buildcache-${{ matrix.version }},mode=max
+          build-args: |
+            ODOO_VERSION=${{ matrix.version }}
+            LOCALES=en_US.UTF-8 UTF-8,bg_BG.UTF-8 UTF-8
+            DEFAULT_LOCALE=en_US.UTF-8
+
+      - name: Image digest
+        run: echo ${{ steps.meta.outputs.digest }}
