@@ -888,16 +888,6 @@ def main() -> int:
 
     logger.info(f"Starting supervisor with init_mode={init_mode}, strict_mode={STRICT_MODE}")
 
-    if github_only_mode:
-        if args.github_only:
-            logger.info("🔄 GitHub-only mode: checking status AND updating repositories")
-        elif args.github_update:
-            logger.info("🔄 GitHub update mode: updating repositories only")
-        elif args.github_status:
-            logger.info("🔍 GitHub status mode: checking repository status only")
-    else:
-        logger.info("🔧 Full supervisor mode: performing complete system setup")
-
     # Set up directories
     opt_dir = DEFAULT_OPT_DIR
     source_dir = args.source_dir or f'{opt_dir}'
@@ -930,14 +920,21 @@ def main() -> int:
         args.github_update = True
 
     if github_only_mode:
-        logger.info("GitHub-only mode: skipping system initialization")
+        if args.github_only:
+            logger.info("🔄 GitHub-only mode: checking status AND updating repositories")
+        elif args.github_update:
+            logger.info("🔄 GitHub update mode: updating repositories only")
+        elif args.github_status:
+            logger.info("🔍 GitHub status mode: checking repository status only")
+    else:
+        logger.info("🔧 Full supervisor mode: performing complete system setup")
 
     # Apply configuration settings
     force_update = bool(settings['force_update']) or args.force_update
     use_requirements = bool(settings['use_requirements'])
     source_dir = settings['source_dir'] or source_dir
     target_dir = settings['target_dir'] or target_dir
-    priority_list = list(settings['priority_list'])
+    priority_list = list(settings.get('priority_list'))
     user_name = settings['user_name']
     user_email = settings['user_email']
     token = settings['token']

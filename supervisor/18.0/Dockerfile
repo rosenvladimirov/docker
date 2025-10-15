@@ -1,4 +1,4 @@
-FROM python:3.11-bookworm
+FROM python:3.13-slim-bookworm
 LABEL maintainer="Rosen Vladimirov <vladimirv.rosen@gmail.com>"
 
 ENV PIPX_BIN_DIR=/usr/local/bin
